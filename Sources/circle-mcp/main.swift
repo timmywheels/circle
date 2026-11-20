@@ -106,7 +106,7 @@ func call(_ name: String, _ a: [String: Any]) throws -> [String: Any] {
         guard let id = a["id"] as? String, var t = try repo.find(id) else {
             return text("No unique todo matches id \((a["id"] as? String) ?? "")", error: true)
         }
-        if name == "complete_todo" { t.done = true }
+        if name == "complete_todo" { t.setDone(true) }
         else if name == "delete_todo" { t.deleted = true }
         else if name == "hand_back" {
             let reason = (a["reason"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -116,7 +116,7 @@ func call(_ name: String, _ a: [String: Any]) throws -> [String: Any] {
         else {
             if let v = a["title"] as? String, !v.isEmpty { t.title = v }
             if let v = a["notes"] as? String { t.notes = v }
-            if let v = a["done"] as? Bool { t.done = v }
+            if let v = a["done"] as? Bool, v != t.done { t.setDone(v) }
             if let v = (a["kind"] as? String).flatMap(Kind.init(rawValue:)) { t.kind = v }
             if let pid = a["parent"] as? String {
                 if pid.isEmpty { t.parent = "" }

@@ -29,7 +29,7 @@ function client(name) {
 }
 
 const row = (id, title, updated_at, origin, extra = {}) => ({
-  id, kind: "todo", parent: "", title, notes: "", done: false, sort: 0, created_at: updated_at, updated_at, deleted: false, origin, ...extra,
+  id, kind: "todo", parent: "", done_at: 0, title, notes: "", done: false, sort: 0, created_at: updated_at, updated_at, deleted: false, origin, ...extra,
 });
 
 const uid = Date.now().toString(16);
@@ -72,6 +72,11 @@ A.send({ t: "push", rows: [row(`${uid}-c1`, "child", 1200, "devA", { parent: `${
 const nest = await A.next((m) => m.cursor === null);
 assert.equal(nest.rows[0].parent, `${uid}-k1`);
 console.log("✓ nesting");
+
+A.send({ t: "push", rows: [row(`${uid}-d1`, "finished", 1300, "devA", { done: true, done_at: 1299 })] });
+const fin = await A.next((m) => m.cursor === null);
+assert.equal(fin.rows[0].done_at, 1299);
+console.log("✓ done_at");
 
 // 3. LWW: older write loses, server echoes the newer canonical row
 B.send({ t: "push", rows: [row(`${uid}-1`, "buy oat milk", 2000, "devB")] });

@@ -100,34 +100,24 @@ struct Palette: View {
                                          current: reg.agentID == a.id && reg.model == m) { reg.choose(a, model: m) })
             }
         }
-        for k in Kind.allCases {
-            let name = ["todo": "mine", "agent": "agent", "wait": "waiting"][k.rawValue] ?? k.rawValue
-            items.append(PaletteItem(id: "filter:\(k.rawValue)", title: "show only \(k.glyph(done: false)) \(name)",
-                                     detail: "⌥\(Kind.allCases.firstIndex(of: k)! + 1)", current: store.filter == k) {
-                store.filter = store.filter == k ? nil : k
-            })
-        }
-        if store.filter != nil {
-            items.append(PaletteItem(id: "filter:all", title: "show all shapes", detail: "esc") { store.filter = nil })
-        }
+
         items.append(PaletteItem(id: "cwd", title: "folder…", detail: abbreviate(reg.cwd)) { chooseFolder() })
         for level in Autonomy.allCases {
             items.append(PaletteItem(id: "auto:\(level.rawValue)", title: "autonomy: \(level.rawValue)",
                                      detail: level.label, current: reg.autonomy == level) { reg.autonomy = level })
         }
-        items.append(PaletteItem(id: "hide", title: store.hideDone ? "show completed" : "hide completed", detail: "H") {
-            store.hideDone.toggle()
-        })
-        items.append(PaletteItem(id: "logbook", title: store.logbook ? "back to list" : "logbook", detail: "L") {
-            store.logbook.toggle()
-        })
         items.append(PaletteItem(id: "clear", title: "clear completed", detail: "undo with u") { store.clearCompleted() })
         items.append(PaletteItem(id: "mcp", title: "install mcp in agents", detail: "claude, codex") {
             app.say(reg.installMCP())
         })
         items.append(PaletteItem(id: "rescan", title: "rescan agents") { reg.scan(); app.say("scanning PATH") })
         items.append(PaletteItem(id: "sync", title: "reconnect sync", detail: store.syncState.label) { app.sync.reload() })
-        items.append(PaletteItem(id: "help", title: "keyboard shortcuts", detail: "?") { app.helpOpen = true })
+        items.append(PaletteItem(id: "keymap", title: "edit keymap", detail: "keymap.json") { app.keymap.openFile() })
+        items.append(PaletteItem(id: "keymap-reload", title: "reload keymap") { app.reloadKeymap() })
+        // Every keyboard command, with its current shortcut.
+        for a in Action.allCases where a != .palette {
+            items.append(PaletteItem(id: "act:\(a.rawValue)", title: a.title, detail: app.keymap.label(a)) { app.perform(a) })
+        }
         return items
     }
 

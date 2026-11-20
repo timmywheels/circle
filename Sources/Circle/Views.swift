@@ -43,6 +43,12 @@ struct RootView: View {
             if app.helpOpen { HelpOverlay().onTapGesture { app.helpOpen = false } }
         }
         .transaction { $0.animation = nil }   // nothing animates; everything is immediate
+        .environment(\.openURL, OpenURLAction { url in
+            guard url.scheme == "circle", let name = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "t" })?.value else { return .systemAction }
+            app.openLink(named: name)
+            return .handled
+        })
         .onAppear { app.openWindow = openWindow; applyFocus() }
         .onChange(of: app.focusRequest) { applyFocus() }
     }
@@ -60,21 +66,73 @@ struct InputLine: View {
     @Environment(AppModel.self) private var app
     var focus: FocusState<Field?>.Binding
     @State private var draft = ""
+    @State private var pick = 0
+
+    /// The text after an unclosed "[[", if the caret is inside a link being typed.
+    private var linkQuery: String? {
+        guard let r = draft.range(of: "[[", options: .backwards) else { return nil }
+        let rest = draft[r.upperBound...]
+        return rest.contains("]]") ? nil : String(rest)
+    }
+
+    private func complete(_ t: Todo) {
+        guard let r = draft.range(of: "[[", options: .backwards) else { return }
+        draft = String(draft[..<r.lowerBound]) + "[[" + t.displayTitle + "]] "
+        pick = 0
+    }
 
     var body: some View {
+        let sugg = linkQuery.map { app.store.suggestions($0) } ?? []
+        VStack(alignment: .leading, spacing: 0) {
         HStack(spacing: 10) {
             Text(app.insertAfter == nil ? "+" : "↳").foregroundStyle(Theme.dim)
             TextField("", text: $draft, prompt: Text(placeholder).foregroundColor(Theme.faint))
                 .textFieldStyle(.plain)
                 .focused(focus, equals: .input)
-                .onSubmit(submit)
-                .onExitCommand { draft = ""; app.insertAfter = nil; focus.wrappedValue = .list }
-                .onKeyPress(.downArrow) { focus.wrappedValue = .list; return .handled }
+                .onSubmit {
+                    if !sugg.isEmpty { complete(sugg[min(pick, sugg.count - 1)]); focus.wrappedValue = .input }
+                    else { submit() }
+                }
+                .onExitCommand {
+                    if linkQuery != nil { draft += "]]"; return }
+                    draft = ""; app.insertAfter = nil; focus.wrappedValue = .list
+                }
+                .onKeyPress(.downArrow) {
+                    if !sugg.isEmpty { pick = min(pick + 1, sugg.count - 1); return .handled }
+                    focus.wrappedValue = .list; return .handled
+                }
+                .onKeyPress(.upArrow) {
+                    if !sugg.isEmpty { pick = max(pick - 1, 0); return .handled }
+                    return .ignored
+                }
+                .onKeyPress(.tab) {
+                    if !sugg.isEmpty { complete(sugg[min(pick, sugg.count - 1)]); return .handled }
+                    return .ignored
+                }
+                .onChange(of: linkQuery) { pick = 0 }
         }
         .padding(.leading, 16).padding(.trailing, 16)
         .padding(.top, 30).padding(.bottom, 12)   // clears the traffic lights
         .contentShape(Rectangle())
         .onTapGesture { focus.wrappedValue = .input }
+        if !sugg.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(sugg.enumerated()), id: \.element.id) { i, t in
+                    HStack(spacing: 8) {
+                        Text(t.glyph).foregroundStyle(Theme.faint)
+                        Text(t.title).lineLimit(1)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(i == pick ? Theme.selection : .clear)
+                    .contentShape(Rectangle())
+                    .onTapGesture { complete(t); focus.wrappedValue = .input }
+                }
+            }
+            .padding(.vertical, 4)
+            .padding(.leading, 30).padding(.trailing, 16).padding(.bottom, 8)
+        }
+        }
     }
 
     private var placeholder: String {
@@ -148,85 +206,19 @@ struct TodoList: View {
 
     private func handle(_ k: KeyPress) -> KeyPress.Result {
         let s = app.store
-        let sel = s.selection
-        let cmd = k.modifiers.contains(.command)
-        let opt = k.modifiers.contains(.option)
-
-        switch k.key {
-        case .downArrow: if opt, let id = sel { s.move(id, 1) } else { s.select(1) }; return .handled
-        case .upArrow: if opt, let id = sel { s.move(id, -1) } else { s.select(-1) }; return .handled
-        case .return:
-            if cmd { app.runSelected() } else if sel != nil { app.editingID = sel; app.focusRequest = .edit }
-            return .handled
-        case .delete, .deleteForward:
-            if let id = sel { s.delete(id) }; return .handled
-        case .space:
-            if let id = sel { s.toggle(id) }; return .handled
-        case .tab:
-            if let id = sel {
-                if k.modifiers.contains(.shift) { s.outdent(id) } else { s.indent(id) }
-            }
-            return .handled
-        case KeyEquivalent("\u{19}"):   // backtab
-            if let id = sel { s.outdent(id) }
-            return .handled
-        case .leftArrow: s.left(); return .handled
-        case .rightArrow: s.right(); return .handled
-        case .escape:
-            if app.panelOpen { app.panelOpen = false }
-            else if app.helpOpen { app.helpOpen = false }
+        if k.key == .escape {
+            if app.helpOpen { app.helpOpen = false }
+            else if app.panelOpen { app.panelOpen = false }
             else if s.logbook { s.logbook = false }
             else if s.filter != nil { s.filter = nil }
             else { s.selection = nil }
             return .handled
-        case .home: s.selection = s.ordered.first?.id; return .handled
-        case .end: s.selection = s.ordered.last?.id; return .handled
-        default: break
         }
-        if cmd {
-            if k.characters == "z" { s.undo(); return .handled }
-            return .ignored
-        }
-        if opt {
-            switch k.key.character {
-            case "1", "¡": s.filter = s.filter == .mine ? nil : .mine
-            case "2", "™": s.filter = s.filter == .agent ? nil : .agent
-            case "3", "£": s.filter = s.filter == .waiting ? nil : .waiting
-            case "0", "º": s.filter = nil
-            default: return .ignored
-            }
-            return .handled
-        }
-        switch k.characters {
-        case "j": s.select(1)
-        case "k": s.select(-1)
-        case "J": if let id = sel { s.move(id, 1) }
-        case "K": if let id = sel { s.move(id, -1) }
-        case "g": s.selection = s.ordered.first?.id
-        case "G": s.selection = s.ordered.last?.id
-        case "x": if let id = sel { s.toggle(id) }
-        case "e": if sel != nil { app.editingID = sel; app.focusRequest = .edit }
-        case "d": if let id = sel { s.delete(id) }
-        case "u": s.undo()
-        case "o": app.focusInput(top: false)
-        case "O", "a", "i", "n", "/": app.focusInput(top: true)
-        case "r", "2": app.runSelected()
-        case "1": if let id = sel { s.setKind(id, .mine) }
-        case "3": if let id = sel { s.setKind(id, .waiting) }
-        case "t": if let id = sel, let t = s.todo(id) { s.setKind(id, t.kind.next) }
-        case "0": s.filter = nil
-        case "c": if let id = sel { app.runner.cancel(id) }
-        case "p": app.panelOpen.toggle()
-        case "h": s.left()
-        case "l": s.right()
-        case "N": if sel != nil { app.panelOpen = true; app.focusRequest = .notes }
-        case "L": s.logbook.toggle(); app.say(s.logbook ? "logbook · space restores · esc back" : "")
-        case "H": s.hideDone.toggle(); app.say(s.hideDone ? "hiding completed" : "showing completed")
-        case "?": app.helpOpen.toggle()
-        default: return .ignored
-        }
+        guard let a = app.keymap.action(for: k) else { return .ignored }
+        app.perform(a)
         return .handled
     }
+
 }
 
 struct TodoRow: View {
@@ -279,9 +271,7 @@ struct TodoRow: View {
                         .foregroundStyle(Theme.dim)
                         .lineLimit(1)
                 } else {
-                    Text(todo.title)
-                        .strikethrough(todo.done, color: Theme.faint)
-                        .foregroundStyle(todo.done ? Theme.faint : .primary)
+                    LinkedText(text: todo.title, done: todo.done)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
@@ -292,6 +282,10 @@ struct TodoRow: View {
                     .foregroundStyle(p.done == p.total ? Theme.faint : Theme.dim)
             }
             if !todo.notes.isEmpty { Text("¶").foregroundStyle(Theme.faint) }
+            if store.logbook {
+                Text(Date(timeIntervalSince1970: Double(todo.completedAt) / 1000), format: .dateTime.hour().minute())
+                    .font(Theme.small).foregroundStyle(Theme.faint)
+            }
             if let run { RunBadge(run: run) }
             else if selected && !todo.done && !todo.isSection && app.editingID != todo.id, let a = app.registry.current {
                 Text("r → \(a.id)").font(Theme.small).foregroundStyle(Theme.faint)
@@ -391,6 +385,7 @@ struct AgentPanel: View {
         let todo = app.store.todo(todoID)
         let run = app.runner.run(for: todoID)
         VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 8) {
             TextField("", text: $title, axis: .vertical)
                 .textFieldStyle(.plain)
                 .fontWeight(.semibold)
@@ -401,7 +396,15 @@ struct AgentPanel: View {
                 .onChange(of: focus.wrappedValue) { old, new in
                     if old == .title && new != .title { app.store.rename(todoID, title) }
                 }
-                .padding(.horizontal, 16).padding(.top, 30).padding(.bottom, 8)
+                Button { app.panelOpen = false; app.focusRequest = .list } label: {
+                    Text("×").font(.system(size: 15)).foregroundStyle(Theme.dim)
+                        .frame(width: 18, height: 18).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("close  (esc · \(app.keymap.label(.details)))")
+            }
+            .padding(.leading, 16).padding(.trailing, 10).padding(.top, 30).padding(.bottom, 4)
+            if let t = todo { Stamps(todo: t).padding(.horizontal, 16).padding(.bottom, 8) }
             ZStack(alignment: .topLeading) {
                 if notes.isEmpty {
                     Text("notes").foregroundStyle(Theme.faint).padding(.leading, 5)
@@ -414,6 +417,7 @@ struct AgentPanel: View {
             .font(Theme.small)
             .frame(height: 64)
             .padding(.horizontal, 11)
+            LinksBlock(todoID: todoID)
             if todo?.isSection != true {
             Rectangle().fill(Theme.line).frame(height: 1).padding(.top, 6)
             HStack {
@@ -460,43 +464,30 @@ struct AgentPanel: View {
 // MARK: help
 
 struct HelpOverlay: View {
-    private let rows: [(String, String)] = [
-        ("type + ↩", "add todo (input stays focused)"),
-        ("esc / ↓", "input → list"),
-        ("j k  ↑ ↓", "move selection"),
-        ("J K  ⌥↑ ⌥↓", "reorder"),
-        ("space  x", "fill in (done)"),
-        ("1  2  3", "○ mine  △ agent (runs it)  □ waiting"),
-        ("t", "cycle shape"),
-        ("⌥1 ⌥2 ⌥3", "show one shape   ⌥0 / esc all"),
+    @Environment(AppModel.self) private var app
+
+    private let extras: [(String, String)] = [
+        ("type ↩", "add todo (input stays focused)"),
         ("…@claude ↩", "add and hand straight to an agent"),
-        ("↩  e", "edit title"),
-        ("o", "add below selection"),
-        ("a  n  /", "add at top"),
-        ("d  ⌫", "delete      u  ⌘z  undo"),
-        ("r  ⌘↩", "hand selected todo to the agent"),
-        ("c", "cancel run"),
-        ("tab  ⇧tab", "nest under item above / un-nest"),
-        ("← →  h l", "collapse / expand, jump to parent"),
-        ("dbl-click  p", "details: title, notes, agent output"),
-        ("drag", "reorder · drop on right half to nest"),
+        ("[[ ", "link another todo (↑↓ tab to pick)"),
         ("# name ↩", "add a section header"),
-        ("L", "logbook: completed before today"),
-        ("N", "edit notes"),
-        ("H", "hide / show completed"),
-        ("⌘k", "palette: agent, model, folder, autonomy"),
-        ("⌃⌥space", "summon Circle from anywhere"),
+        ("dbl-click", "details"),
+        ("drag", "reorder · right half nests"),
+        ("esc", "close panel / leave logbook or filter"),
     ]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(rows.indices, id: \.self) { i in
-                let r = rows[i]
-                HStack(spacing: 0) {
-                    Text(r.0).frame(width: 130, alignment: .leading).foregroundStyle(.primary)
-                    Text(r.1).foregroundStyle(Theme.dim)
-                }
+        let km = app.keymap
+        let rows: [(String, String)] = Action.allCases.compactMap { a in
+            let l = km.label(a); return l.isEmpty ? nil : (l, a.title)
+        } + extras + [(Chord(km.globalHotkey)?.label ?? km.globalHotkey, "summon Circle from anywhere")]
+        let half = (rows.count + 1) / 2
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 28) {
+                column(Array(rows[..<half]))
+                column(Array(rows[half...]))
             }
+            Text("edit in keymap.json  ·  ⌘K → edit keymap").foregroundStyle(Theme.faint)
         }
         .font(Theme.small)
         .padding(20)
@@ -506,6 +497,17 @@ struct HelpOverlay: View {
         .shadow(color: .black.opacity(0.18), radius: 24, y: 8)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.opacity(0.001))
+    }
+
+    private func column(_ rows: [(String, String)]) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(rows.indices, id: \.self) { i in
+                HStack(spacing: 0) {
+                    Text(rows[i].0).frame(width: 96, alignment: .leading).foregroundStyle(.primary)
+                    Text(rows[i].1).foregroundStyle(Theme.dim)
+                }
+            }
+        }
     }
 }
 
@@ -631,5 +633,113 @@ struct EndDrop: DropDelegate {
         guard let id = app.draggingID else { return false }
         app.store.moveToEnd(id)
         return true
+    }
+}
+
+
+// MARK: links and timestamps
+
+/// A title with [[links]] rendered as clickable, underlined text.
+struct LinkedText: View {
+    @Environment(AppModel.self) private var app
+    let text: String
+    let done: Bool
+
+    var body: some View {
+        if text.contains("[[") { Text(attributed) } else {
+            Text(text)
+                .strikethrough(done, color: Theme.faint)
+                .foregroundStyle(done ? Theme.faint : .primary)
+        }
+    }
+
+    private var attributed: AttributedString {
+        var out = AttributedString()
+        var rest = Substring(text)
+        let base: Color = done ? Theme.faint : .primary
+        while let open = rest.range(of: "[["), let close = rest[open.upperBound...].range(of: "]]") {
+            var plain = AttributedString(String(rest[..<open.lowerBound]))
+            plain.foregroundColor = base
+            out += plain
+            let name = String(rest[open.upperBound..<close.lowerBound])
+            var link = AttributedString(name)
+            let exists = app.store.resolve(name) != nil
+            let linkColor: Color = done ? Theme.faint : (exists ? Color.accentColor : Theme.dim)
+            link.foregroundColor = linkColor
+            link.underlineStyle = exists ? Text.LineStyle.single : Text.LineStyle(pattern: .dot)
+            var c = URLComponents(); c.scheme = "circle"; c.host = "open"; c.queryItems = [URLQueryItem(name: "t", value: name)]
+            link.link = c.url
+            out += link
+            rest = rest[close.upperBound...]
+        }
+        var tail = AttributedString(String(rest)); tail.foregroundColor = base
+        out += tail
+        if done { out.strikethroughStyle = Text.LineStyle.single }
+        return out
+    }
+}
+
+/// "created Nov 20, 6:12 PM · done 2h ago"
+struct Stamps: View {
+    let todo: Todo
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text("created \(fmt(todo.createdAt))")
+            if todo.done { Text("·"); Text("done \(fmt(todo.completedAt))") }
+            else if todo.updatedAt - todo.createdAt > 60_000 { Text("·"); Text("edited \(fmt(todo.updatedAt))") }
+        }
+        .font(Theme.small).foregroundStyle(Theme.faint)
+        .help("id \(todo.id)")
+    }
+
+    private func fmt(_ ms: Int64) -> String {
+        let d = Date(timeIntervalSince1970: Double(ms) / 1000)
+        if Date().timeIntervalSince(d) < 3600 * 12 { return d.formatted(.relative(presentation: .named)) }
+        return d.formatted(.dateTime.month(.abbreviated).day().hour().minute())
+    }
+}
+
+/// Outgoing [[links]] and backlinks for the details panel.
+struct LinksBlock: View {
+    @Environment(AppModel.self) private var app
+    let todoID: String
+
+    var body: some View {
+        let store = app.store
+        let t = store.todo(todoID)
+        var seen = Set<String>()
+        let out = (Links.names(in: t?.title ?? "") + Links.names(in: t?.notes ?? ""))
+            .filter { seen.insert(Links.key($0)).inserted }
+        let back = store.backlinks(todoID)
+        if !out.isEmpty || !back.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                if !out.isEmpty {
+                    row("links to", out.map { name in (name, store.resolve(name)?.glyph ?? "+") })
+                }
+                if !back.isEmpty {
+                    row("linked from", back.map { ($0.displayTitle, $0.glyph) })
+                }
+            }
+            .font(Theme.small)
+            .padding(.horizontal, 16).padding(.top, 6)
+        }
+    }
+
+    private func row(_ label: String, _ items: [(String, String)]) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label).foregroundStyle(Theme.faint).lineLimit(1).fixedSize().frame(minWidth: 84, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(items.indices, id: \.self) { i in
+                    Button { app.openLink(named: items[i].0) } label: {
+                        HStack(spacing: 6) {
+                            Text(items[i].1).foregroundStyle(Theme.faint)
+                            Text(items[i].0).foregroundStyle(Color.accentColor).lineLimit(1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
     }
 }

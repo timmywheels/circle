@@ -37,6 +37,7 @@ public final class TodoRepo: @unchecked Sendable {
         try db.query("PRAGMA table_info(todos)") { existing.insert($0.text(1)) }
         if !existing.contains("kind") { try db.exec("ALTER TABLE todos ADD COLUMN kind TEXT NOT NULL DEFAULT 'todo'") }
         if !existing.contains("parent") { try db.exec("ALTER TABLE todos ADD COLUMN parent TEXT NOT NULL DEFAULT ''") }
+        if !existing.contains("done_at") { try db.exec("ALTER TABLE todos ADD COLUMN done_at INTEGER NOT NULL DEFAULT 0") }
         var dev = ""
         try db.query("SELECT v FROM meta WHERE k='device'") { dev = $0.text(0) }
         if dev.isEmpty {
@@ -47,27 +48,27 @@ public final class TodoRepo: @unchecked Sendable {
         device = dev
     }
 
-    private static let cols = "id,title,notes,done,sort,created_at,updated_at,deleted,origin,kind,parent"
+    private static let cols = "id,title,notes,done,sort,created_at,updated_at,deleted,origin,kind,parent,done_at"
 
     private func decode(_ r: SQLiteDB.Row) -> Todo {
         Todo(id: r.text(0), title: r.text(1), notes: r.text(2), done: r.int(3) != 0, sort: r.real(4),
              createdAt: r.int(5), updatedAt: r.int(6), deleted: r.int(7) != 0, origin: r.text(8))
-            .with(kind: Kind(rawValue: r.text(9)) ?? .mine, parent: r.text(10))
+            .with(kind: Kind(rawValue: r.text(9)) ?? .mine, parent: r.text(10), doneAt: r.int(11))
     }
 
     private func args(_ t: Todo, dirty: Bool) -> [SQLValue] {
         [.text(t.id), .text(t.title), .text(t.notes), .int(t.done ? 1 : 0), .real(t.sort),
          .int(t.createdAt), .int(t.updatedAt), .int(t.deleted ? 1 : 0), .text(t.origin), .text(t.kind.rawValue),
-         .text(t.parent), .int(dirty ? 1 : 0)]
+         .text(t.parent), .int(t.doneAt), .int(dirty ? 1 : 0)]
     }
 
     // LWW upsert: only overwrite when the incoming row wins.
     private static func upsert(local: Bool) -> String {
         let cmp = local ? ">=" : ">"
         return """
-        INSERT INTO todos(\(cols),dirty) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO todos(\(cols),dirty) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET
-          kind=excluded.kind, parent=excluded.parent, title=excluded.title, notes=excluded.notes, done=excluded.done, sort=excluded.sort,
+          kind=excluded.kind, parent=excluded.parent, done_at=excluded.done_at, title=excluded.title, notes=excluded.notes, done=excluded.done, sort=excluded.sort,
           updated_at=excluded.updated_at, deleted=excluded.deleted, origin=excluded.origin,
           dirty=excluded.dirty
         WHERE excluded.updated_at > todos.updated_at
@@ -171,5 +172,7 @@ public final class TodoRepo: @unchecked Sendable {
 }
 
 extension Todo {
-    func with(kind: Kind, parent: String) -> Todo { var t = self; t.kind = kind; t.parent = parent; return t }
+    func with(kind: Kind, parent: String, doneAt: Int64) -> Todo {
+        var t = self; t.kind = kind; t.parent = parent; t.doneAt = doneAt; return t
+    }
 }

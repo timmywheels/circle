@@ -12,6 +12,7 @@ type Row = {
   id: string;
   kind: Kind;
   parent: string;
+  done_at: number;
   title: string;
   notes: string;
   done: boolean;
@@ -43,7 +44,7 @@ function timingSafeEqual(a: string, b: string): boolean {
   return r === 0;
 }
 
-const COLS = "id,title,notes,done,sort,created_at,updated_at,deleted,origin,seq,kind,parent";
+const COLS = "id,title,notes,done,sort,created_at,updated_at,deleted,origin,seq,kind,parent,done_at";
 
 export class SyncRoom extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -63,6 +64,7 @@ export class SyncRoom extends DurableObject<Env> {
     const cols = this.sql.exec("PRAGMA table_info(todos)").toArray().map((c) => c.name);
     if (!cols.includes("kind")) this.sql.exec("ALTER TABLE todos ADD COLUMN kind TEXT NOT NULL DEFAULT 'todo'");
     if (!cols.includes("parent")) this.sql.exec("ALTER TABLE todos ADD COLUMN parent TEXT NOT NULL DEFAULT ''");
+    if (!cols.includes("done_at")) this.sql.exec("ALTER TABLE todos ADD COLUMN done_at INTEGER NOT NULL DEFAULT 0");
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -93,6 +95,7 @@ export class SyncRoom extends DurableObject<Env> {
         id: now.toString(16).padStart(11, "0") + crypto.getRandomValues(new Uint32Array(1))[0].toString(16).padStart(8, "0"),
         kind: KINDS.includes(body?.kind as Kind) ? (body!.kind as Kind) : "todo",
         parent: typeof body?.parent === "string" ? body.parent.slice(0, 64) : "",
+        done_at: 0,
         title, notes: body?.notes ?? "", done: false, sort: minSort - 1,
         created_at: now, updated_at: now, deleted: false, origin: "api",
       };
@@ -150,13 +153,13 @@ export class SyncRoom extends DurableObject<Env> {
       for (const r of rows) {
         const next = seq + 1;
         const cur = this.sql.exec(
-          `INSERT INTO todos(${COLS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+          `INSERT INTO todos(${COLS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(id) DO UPDATE SET
-             kind=excluded.kind, parent=excluded.parent, title=excluded.title, notes=excluded.notes, done=excluded.done, sort=excluded.sort,
+             kind=excluded.kind, parent=excluded.parent, done_at=excluded.done_at, title=excluded.title, notes=excluded.notes, done=excluded.done, sort=excluded.sort,
              updated_at=excluded.updated_at, deleted=excluded.deleted, origin=excluded.origin, seq=excluded.seq
            WHERE excluded.updated_at > todos.updated_at
               OR (excluded.updated_at = todos.updated_at AND excluded.origin > todos.origin)`,
-          r.id, r.title, r.notes, r.done ? 1 : 0, r.sort, r.created_at, r.updated_at, r.deleted ? 1 : 0, r.origin, next, r.kind, r.parent,
+          r.id, r.title, r.notes, r.done ? 1 : 0, r.sort, r.created_at, r.updated_at, r.deleted ? 1 : 0, r.origin, next, r.kind, r.parent, r.done_at,
         );
         if (cur.rowsWritten > 0) {
           seq = next;
@@ -199,6 +202,7 @@ function fromDB(r: Record<string, SqlStorageValue>): Row & { seq: number } {
     id: r.id as string,
     kind: (KINDS.includes(r.kind as Kind) ? r.kind : "todo") as Kind,
     parent: (r.parent as string) ?? "",
+    done_at: (r.done_at as number) ?? 0,
     title: r.title as string,
     notes: r.notes as string,
     done: (r.done as number) === 1,
@@ -228,6 +232,7 @@ function validate(x: unknown): Row | null {
   const kind: Kind = KINDS.includes(r.kind as Kind) ? (r.kind as Kind) : "todo";
   return {
     id: r.id as string, kind, parent: typeof r.parent === "string" && r.parent.length <= 64 ? r.parent : "",
+    done_at: typeof r.done_at === "number" && Number.isFinite(r.done_at) ? Math.trunc(r.done_at) : 0,
     title: r.title as string, notes, done: r.done, sort: r.sort as number,
     created_at: Math.trunc(r.created_at as number), updated_at: Math.trunc(r.updated_at as number),
     deleted: r.deleted, origin: r.origin as string,

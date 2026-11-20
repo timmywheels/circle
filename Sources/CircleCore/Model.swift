@@ -24,6 +24,8 @@ public struct Todo: Identifiable, Equatable, Codable, Sendable {
     public var kind: Kind
     /// Parent todo id, or "" for a top-level item.
     public var parent: String
+    /// When it was filled in (ms), 0 while open.
+    public var doneAt: Int64
     public var title: String
     public var notes: String
     public var done: Bool
@@ -36,15 +38,16 @@ public struct Todo: Identifiable, Equatable, Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, kind, parent, title, notes, done, sort, deleted, origin
         case createdAt = "created_at"
+        case doneAt = "done_at"
         case updatedAt = "updated_at"
     }
 
     public init(id: String = Todo.newID(), kind: Kind = .mine, parent: String = "", title: String, notes: String = "", done: Bool = false,
                 sort: Double, createdAt: Int64 = Clock.now(), updatedAt: Int64? = nil,
-                deleted: Bool = false, origin: String) {
+                deleted: Bool = false, origin: String, doneAt: Int64 = 0) {
         self.id = id; self.kind = kind; self.parent = parent; self.title = title; self.notes = notes; self.done = done
         self.sort = sort; self.createdAt = createdAt; self.updatedAt = updatedAt ?? createdAt
-        self.deleted = deleted; self.origin = origin
+        self.deleted = deleted; self.origin = origin; self.doneAt = doneAt
     }
 
     public init(from d: Decoder) throws {
@@ -60,9 +63,19 @@ public struct Todo: Identifiable, Equatable, Codable, Sendable {
         updatedAt = try c.decode(Int64.self, forKey: .updatedAt)
         deleted = try c.decode(Bool.self, forKey: .deleted)
         origin = try c.decode(String.self, forKey: .origin)
+        doneAt = (try? c.decode(Int64.self, forKey: .doneAt)) ?? 0
     }
 
     public var glyph: String { kind.glyph(done: done) }
+
+    /// Completion time, falling back to the last edit for rows made before done_at existed.
+    public var completedAt: Int64 { doneAt > 0 ? doneAt : updatedAt }
+
+    /// Fills in or reopens, stamping the completion time.
+    public mutating func setDone(_ on: Bool) {
+        done = on
+        doneAt = on ? Clock.now() : 0
+    }
 
     /// Last-writer-wins ordering. Ties broken by origin so every replica agrees.
     public func wins(over o: Todo) -> Bool {
@@ -138,4 +151,31 @@ public extension Todo {
     /// A title starting with "# " makes the row a section header.
     var isSection: Bool { title.hasPrefix("# ") }
     var displayTitle: String { isSection ? String(title.dropFirst(2)) : title }
+}
+
+/// [[wikilinks]] between todos, by title (case-insensitive).
+public enum Links {
+    private static let re = try! NSRegularExpression(pattern: #"\[\[([^\[\]\n]{1,200})\]\]"#)
+
+    public static func names(in text: String) -> [String] {
+        guard text.contains("[[") else { return [] }
+        let ns = text as NSString
+        return re.matches(in: text, range: NSRange(location: 0, length: ns.length)).map {
+            ns.substring(with: $0.range(at: 1)).trimmingCharacters(in: .whitespaces)
+        }.filter { !$0.isEmpty }
+    }
+
+    public static func key(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespaces).lowercased()
+    }
+
+    /// Replaces [[old]] (any case) with [[new]].
+    public static func rename(in text: String, from old: String, to new: String) -> String {
+        guard text.contains("[[") else { return text }
+        let pattern = "\\[\\[\\s*" + NSRegularExpression.escapedPattern(for: old) + "\\s*\\]\\]"
+        guard let r = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return text }
+        let ns = text as NSString
+        return r.stringByReplacingMatches(in: text, range: NSRange(location: 0, length: ns.length),
+                                          withTemplate: NSRegularExpression.escapedTemplate(for: "[[" + new + "]]"))
+    }
 }

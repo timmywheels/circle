@@ -21,11 +21,15 @@ struct CircleApp: App {
                 Button("New Todo") { app.focusInput(top: true) }.keyboardShortcut("n")
             }
             CommandMenu("Go") {
+                // Menu shortcuts work even while typing in a field; list keys live in keymap.json.
                 Button("Command Palette") { app.paletteOpen.toggle() }.keyboardShortcut("k")
-                Button("Toggle Agent Panel") { app.panelOpen.toggle() }.keyboardShortcut("j")
-                Button("Run Agent on Selection") { app.runSelected() }.keyboardShortcut(.return, modifiers: .command)
+                Button("Details Panel") { app.perform(.details) }.keyboardShortcut("j")
+                Button("Hand to Agent") { app.runSelected() }.keyboardShortcut(.return, modifiers: .command)
+                Button("Back") { app.perform(.back) }.keyboardShortcut("[")
                 Divider()
                 Button("Keyboard Shortcuts") { app.helpOpen.toggle() }.keyboardShortcut("/")
+                Button("Edit Keymap…") { app.keymap.openFile() }
+                Button("Reload Keymap") { app.reloadKeymap() }
             }
         }
     }
@@ -33,15 +37,24 @@ struct CircleApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: HotKey?
+    static weak var shared: AppDelegate?
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        AppDelegate.shared = self
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        // ⌃⌥Space summons Circle from anywhere.
-        hotKey = HotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(controlKey | optionKey)) {
+        MainActor.assumeIsolated { AppModel.shared.boot() }
+        registerHotkey()
+    }
+
+    /// Summon chord from keymap.json ("global"), default ⌃⌥Space.
+    func registerHotkey() {
+        hotKey = nil
+        let hk = MainActor.assumeIsolated { AppModel.shared.keymap.carbonHotkey }
+            ?? (UInt32(kVK_Space), UInt32(controlKey | optionKey))
+        hotKey = HotKey(keyCode: hk.code, modifiers: hk.mods) {
             MainActor.assumeIsolated { AppModel.shared.summon() }
         }
-        MainActor.assumeIsolated { AppModel.shared.boot() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -67,7 +80,10 @@ final class AppModel {
     let store: Store
     let registry: AgentRegistry
     let runner: AgentRunner
+    let keymap = Keymap()
     @ObservationIgnored let sync: SyncClient
+    /// Where `back` (⌘[) returns to after following links.
+    @ObservationIgnored var history: [String] = []
 
     init() {
         let s = Store(), r = AgentRegistry()
@@ -155,6 +171,74 @@ final class AppModel {
         return t
     }
 
+    /// Runs a keymap action against the current selection.
+    func perform(_ a: Action) {
+        let s = store
+        let sel = s.selection
+        switch a {
+        case .down: s.select(1)
+        case .up: s.select(-1)
+        case .top: s.selection = s.ordered.first?.id
+        case .bottom: s.selection = s.ordered.last?.id
+        case .moveDown: if let id = sel { s.move(id, 1) }
+        case .moveUp: if let id = sel { s.move(id, -1) }
+        case .indent: if let id = sel { s.indent(id) }
+        case .outdent: if let id = sel { s.outdent(id) }
+        case .collapse: s.left()
+        case .expand: s.right()
+        case .toggle: if let id = sel { s.toggle(id) }
+        case .edit: if sel != nil { editingID = sel; focusRequest = .edit }
+        case .delete: if let id = sel { s.delete(id) }
+        case .undo: s.undo()
+        case .addTop: focusInput(top: true)
+        case .addBelow: focusInput(top: false)
+        case .run, .shapeAgent: runSelected()
+        case .cancel: if let id = sel { runner.cancel(id) }
+        case .details: panelOpen.toggle(); if !panelOpen { focusRequest = .list }
+        case .notes: if sel != nil { panelOpen = true; focusRequest = .notes }
+        case .shapeMine: if let id = sel { s.setKind(id, .mine) }
+        case .shapeWaiting: if let id = sel { s.setKind(id, .waiting) }
+        case .cycleShape: if let id = sel, let t = s.todo(id) { s.setKind(id, t.kind.next) }
+        case .filterMine: s.filter = s.filter == .mine ? nil : .mine
+        case .filterAgent: s.filter = s.filter == .agent ? nil : .agent
+        case .filterWaiting: s.filter = s.filter == .waiting ? nil : .waiting
+        case .filterAll: s.filter = nil; s.logbook = false
+        case .followLink:
+            guard let t = s.todo(sel) else { return }
+            let names = Links.names(in: t.title) + Links.names(in: t.notes)
+            guard let first = names.first else { say("no [[links]] in this todo"); return }
+            openLink(named: first)
+        case .back:
+            guard let id = history.popLast(), s.todo(id) != nil else { return }
+            reveal(id)
+        case .hideDone: s.hideDone.toggle(); say(s.hideDone ? "hiding completed" : "showing completed")
+        case .logbook: s.logbook.toggle(); say(s.logbook ? "logbook · space restores · esc back" : "")
+        case .palette: paletteOpen.toggle()
+        case .help: helpOpen.toggle()
+        }
+    }
+
+    /// Opens the todo a [[link]] points at, creating it if it doesn't exist yet.
+    func openLink(named name: String) {
+        if let from = store.selection { history.append(from); if history.count > 50 { history.removeFirst() } }
+        if let target = store.resolve(name) { reveal(target.id); return }
+        if let t = store.add(name) { reveal(t.id); say("created [[\(name)]]") }
+    }
+
+    /// Selects a todo, expanding its ancestors and leaving filters/logbook so it is visible.
+    func reveal(_ id: String) {
+        store.reveal(id)
+        store.selection = id
+        panelOpen = true
+        focusRequest = .list
+    }
+
+    func reloadKeymap() {
+        keymap.reload()
+        AppDelegate.shared?.registerHotkey()
+        say(keymap.error ?? "keymap reloaded")
+    }
+
     func say(_ s: String) {
         flash = s
         flashWork?.cancel()
@@ -168,15 +252,19 @@ final class AppModel {
 final class HotKey {
     private var ref: EventHotKeyRef?
     private static var action: (() -> Void)?
+    private static var handlerInstalled = false
 
     init(keyCode: UInt32, modifiers: UInt32, action: @escaping () -> Void) {
         HotKey.action = action
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-            HotKey.action?()
-            return noErr
-        }, 1, &spec, nil, nil)
-        let id = EventHotKeyID(signature: OSType(0x424C4E4B), id: 1) // 'BLNK'
+        if !HotKey.handlerInstalled {
+            HotKey.handlerInstalled = true
+            var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
+                HotKey.action?()
+                return noErr
+            }, 1, &spec, nil, nil)
+        }
+        let id = EventHotKeyID(signature: OSType(0x424C4E4B), id: 1)
         RegisterEventHotKey(keyCode, modifiers, id, GetApplicationEventTarget(), 0, &ref)
     }
 

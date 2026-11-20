@@ -84,7 +84,7 @@ final class Store {
         func archived(_ t: Todo) -> Bool {
             if let m = memo[t.id] { return m }
             memo[t.id] = false // cycle guard
-            let r = t.done && !t.isSection && t.updatedAt < dayStart && (k[t.id] ?? []).allSatisfy { archived($0) }
+            let r = t.done && !t.isSection && t.completedAt < dayStart && (k[t.id] ?? []).allSatisfy { archived($0) }
             memo[t.id] = r
             return r
         }
@@ -92,7 +92,7 @@ final class Store {
         var rows: [Todo] = []
         var d: [String: Int] = [:]
         if logbook {
-            rows = live.filter { archived($0) }.sorted { $0.updatedAt > $1.updatedAt }
+            rows = live.filter { archived($0) }.sorted { $0.completedAt > $1.completedAt }
         } else if let f = filter {
             rows = live.filter { $0.kind == f && !$0.isSection && !archived($0) && !(hideDone && $0.done) }.sorted(by: Self.order)
         } else {
@@ -186,15 +186,75 @@ final class Store {
     func toggle(_ id: String) {
         guard var t = byID[id] else { return }
         if t.isSection { setCollapsed(id, !collapsed.contains(id)); return }
-        t.done.toggle()
+        t.setDone(!t.done)
         commit([t.touched(by: device)])
     }
 
+    /// Renames, and rewrites [[old title]] links elsewhere so they keep pointing here.
     func rename(_ id: String, _ title: String) {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard var t = byID[id], !title.isEmpty, title != t.title else { return }
+        let old = t.displayTitle
         t.title = title
-        commit([t.touched(by: device)])
+        var changed = [t.touched(by: device)]
+        let new = t.displayTitle
+        if Links.key(old) != Links.key(new) || old != new {
+            let oldKey = Links.key(old)
+            for o in byID.values where !o.deleted && o.id != id {
+                let hits = (Links.names(in: o.title) + Links.names(in: o.notes)).contains { Links.key($0) == oldKey }
+                guard hits else { continue }
+                var c = o
+                c.title = Links.rename(in: c.title, from: old, to: new)
+                c.notes = Links.rename(in: c.notes, from: old, to: new)
+                changed.append(c.touched(by: device))
+            }
+        }
+        commit(changed)
+    }
+
+    /// The todo a [[name]] refers to: exact title match, open items first.
+    func resolve(_ name: String) -> Todo? {
+        let key = Links.key(name)
+        return byID.values
+            .filter { !$0.deleted && Links.key($0.displayTitle) == key }
+            .min { a, b in a.done != b.done ? !a.done : a.createdAt < b.createdAt }
+    }
+
+    /// Todos whose title or notes link to this one.
+    func backlinks(_ id: String) -> [Todo] {
+        guard let t = byID[id] else { return [] }
+        let key = Links.key(t.displayTitle)
+        return byID.values
+            .filter { !$0.deleted && $0.id != id && (Links.names(in: $0.title) + Links.names(in: $0.notes)).contains { Links.key($0) == key } }
+            .sorted(by: Self.order)
+    }
+
+    /// Todos matching a [[ autocomplete query.
+    func suggestions(_ q: String, limit: Int = 6) -> [Todo] {
+        let key = Links.key(q)
+        let pool = byID.values.filter { !$0.deleted && !$0.isSection }
+        let hits = key.isEmpty ? pool : pool.filter { $0.title.lowercased().contains(key) }
+        return Array(hits.sorted { a, b in
+            let ap = a.title.lowercased().hasPrefix(key), bp = b.title.lowercased().hasPrefix(key)
+            if ap != bp { return ap }
+            if a.done != b.done { return !a.done }
+            return a.updatedAt > b.updatedAt
+        }.prefix(limit))
+    }
+
+    /// Makes a todo visible: leave logbook/filters that hide it, expand its ancestors.
+    func reveal(_ id: String) {
+        guard let t = byID[id] else { return }
+        var p = parentID(t), hops = 0
+        var changed = false
+        while !p.isEmpty, hops < 64 {
+            if collapsed.contains(p) { collapsed.remove(p); changed = true }
+            p = byID[p].map { parentID($0) } ?? ""; hops += 1
+        }
+        if filter != nil && filter != t.kind { filter = nil }
+        if t.done && hideDone { hideDone = false }
+        let inLogbook = t.done && t.completedAt < dayStart
+        if logbook != inLogbook { logbook = inLogbook } else if changed { rebuild() }
     }
 
     func setNotes(_ id: String, _ notes: String) {
