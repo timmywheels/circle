@@ -52,7 +52,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-enum Field: Hashable { case input, list, edit, palette, notes }
+enum Field: Hashable { case input, list, edit, palette, notes, title }
+
+struct DropHint: Equatable {
+    let id: String
+    let after: Bool
+    let nest: Bool
+}
 
 @MainActor @Observable
 final class AppModel {
@@ -77,6 +83,9 @@ final class AppModel {
     var paletteOpen = false { didSet { if !paletteOpen { focusRequest = .list } } }
     var panelOpen = false
     var helpOpen = false
+    /// Drag and drop state for the list.
+    var dropHint: DropHint?
+    @ObservationIgnored var draggingID: String?
     var flash: String?
     @ObservationIgnored var openWindow: OpenWindowAction?
     @ObservationIgnored private var flashWork: DispatchWorkItem?
@@ -116,6 +125,7 @@ final class AppModel {
         guard registry.current != nil else {
             say(registry.scanned ? "no agent CLIs found on PATH" : "still looking for agents…"); return
         }
+        guard let t0 = store.todo(id), !t0.isSection else { return }
         store.setKind(id, .agent)
         guard let t = store.todo(id) else { return }
         if runner.start(t) != nil { panelOpen = true }

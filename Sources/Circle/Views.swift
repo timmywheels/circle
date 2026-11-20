@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import CircleCore
 
 enum Theme {
@@ -102,25 +103,47 @@ struct TodoList: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    ForEach(store.ordered) { t in
+                    ForEach(Array(store.ordered.enumerated()), id: \.element.id) { i, t in
+                        if store.logbook, let label = dayLabel(t, previous: i > 0 ? store.ordered[i - 1] : nil) {
+                            Text(label).font(Theme.small).fontWeight(.semibold).tracking(0.8)
+                                .foregroundStyle(Theme.dim)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.leading, 18).padding(.top, i == 0 ? 6 : 16).padding(.bottom, 4)
+                        }
                         TodoRow(todo: t, selected: t.id == store.selection, focus: focus)
                             .id(t.id)
                     }
                 }
                 .padding(.vertical, 6)
                 if store.ordered.isEmpty {
-                    Text(store.hideDone ? "all clear. completed items hidden." : "nothing here. start typing.")
+                    Text(store.logbook ? "nothing in the logbook yet. completed items land here the next day."
+                         : store.hideDone ? "all clear. completed items hidden." : "nothing here. start typing.")
                         .foregroundStyle(Theme.faint)
                         .padding(.top, 40)
                 }
+                if app.dropHint?.id == EndDrop.id {
+                    Rectangle().fill(Color.accentColor).frame(height: 2).padding(.leading, 30)
+                }
             }
             .scrollIndicators(.never)
+            // Rows handle their own drops; anything that lands in the empty space below goes to the end.
+            .onDrop(of: [.text], delegate: EndDrop(app: app))
             .onChange(of: store.selection) { _, id in if let id { proxy.scrollTo(id) } }
         }
         .focusable()
         .focused(focus, equals: .list)
         .focusEffectDisabled()
         .onKeyPress(phases: [.down, .repeat]) { press in handle(press) }
+    }
+
+    /// "TODAY", "YESTERDAY", "TUE NOV 18" headers in the logbook.
+    private func dayLabel(_ t: Todo, previous: Todo?) -> String? {
+        let cal = Calendar.current
+        let day = Date(timeIntervalSince1970: Double(t.updatedAt) / 1000)
+        if let p = previous, cal.isDate(day, inSameDayAs: Date(timeIntervalSince1970: Double(p.updatedAt) / 1000)) { return nil }
+        if cal.isDateInToday(day) { return "TODAY" }
+        if cal.isDateInYesterday(day) { return "YESTERDAY" }
+        return day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()).uppercased()
     }
 
     private func handle(_ k: KeyPress) -> KeyPress.Result {
@@ -152,6 +175,7 @@ struct TodoList: View {
         case .escape:
             if app.panelOpen { app.panelOpen = false }
             else if app.helpOpen { app.helpOpen = false }
+            else if s.logbook { s.logbook = false }
             else if s.filter != nil { s.filter = nil }
             else { s.selection = nil }
             return .handled
@@ -196,6 +220,7 @@ struct TodoList: View {
         case "h": s.left()
         case "l": s.right()
         case "N": if sel != nil { app.panelOpen = true; app.focusRequest = .notes }
+        case "L": s.logbook.toggle(); app.say(s.logbook ? "logbook · space restores · esc back" : "")
         case "H": s.hideDone.toggle(); app.say(s.hideDone ? "hiding completed" : "showing completed")
         case "?": app.helpOpen.toggle()
         default: return .ignored
@@ -230,11 +255,13 @@ struct TodoRow: View {
             .frame(width: 10)
             .padding(.leading, CGFloat(level) * 22)
             .padding(.trailing, -4)
-            ShapeGlyph(todo: todo, running: run?.status == .running)
-                .frame(width: 14)
-                .contentShape(Rectangle())
-                .onTapGesture { app.store.toggle(todo.id) }
-                .help("click to fill in · 1 ○ mine · 2 △ agent · 3 □ waiting")
+            if !todo.isSection {
+                ShapeGlyph(todo: todo, running: run?.status == .running)
+                    .frame(width: 14)
+                    .contentShape(Rectangle())
+                    .onTapGesture { app.store.toggle(todo.id) }
+                    .help("click to fill in · 1 ○ mine · 2 △ agent · 3 □ waiting")
+            }
             if app.editingID == todo.id {
                 TextField("", text: $editText)
                     .textFieldStyle(.plain)
@@ -246,11 +273,18 @@ struct TodoRow: View {
                         if f != .edit && app.editingID == todo.id { app.store.rename(todo.id, editText); app.editingID = nil }
                     }
             } else {
-                Text(todo.title)
-                    .strikethrough(todo.done, color: Theme.faint)
-                    .foregroundStyle(todo.done ? Theme.faint : .primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                if todo.isSection {
+                    Text(todo.displayTitle.uppercased())
+                        .font(Theme.small).fontWeight(.semibold).tracking(0.8)
+                        .foregroundStyle(Theme.dim)
+                        .lineLimit(1)
+                } else {
+                    Text(todo.title)
+                        .strikethrough(todo.done, color: Theme.faint)
+                        .foregroundStyle(todo.done ? Theme.faint : .primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
             Spacer(minLength: 8)
             if let p = store.progress[todo.id] {
@@ -259,20 +293,31 @@ struct TodoRow: View {
             }
             if !todo.notes.isEmpty { Text("¶").foregroundStyle(Theme.faint) }
             if let run { RunBadge(run: run) }
-            else if selected && !todo.done && app.editingID != todo.id, let a = app.registry.current {
+            else if selected && !todo.done && !todo.isSection && app.editingID != todo.id, let a = app.registry.current {
                 Text("r → \(a.id)").font(Theme.small).foregroundStyle(Theme.faint)
             }
         }
         .padding(.leading, 8).padding(.trailing, 16)
-        .padding(.vertical, 5)
+        .padding(.top, todo.isSection && level == 0 ? 14 : 5).padding(.bottom, 5)
         .background(selected ? Theme.selection : .clear)
+        .overlay(alignment: app.dropHint?.after == true ? .bottom : .top) {
+            if let h = app.dropHint, h.id == todo.id {
+                Rectangle().fill(Color.accentColor).frame(height: 2)
+                    .padding(.leading, 8 + CGFloat(level + (h.nest ? 1 : 0)) * 22 + 14)
+            }
+        }
         .contentShape(Rectangle())
         .contextMenu { RowMenu(todo: todo) }
         .onTapGesture {
             app.store.selection = todo.id
-            if NSApp.currentEvent?.clickCount == 2 { app.editingID = todo.id; app.focusRequest = .edit }
+            if NSApp.currentEvent?.clickCount == 2 { app.panelOpen = true; focus.wrappedValue = .list }
             else { focus.wrappedValue = .list }
         }
+        .onDrag {
+            app.draggingID = todo.id
+            return NSItemProvider(object: todo.id as NSString)
+        }
+        .onDrop(of: [.text], delegate: RowDrop(target: todo, level: level, app: app))
     }
 
     private func endEdit() {
@@ -309,7 +354,8 @@ struct StatusLine: View {
             Text(abbreviate(reg.cwd)).lineLimit(1).truncationMode(.head)
             Text(reg.autonomy.rawValue)
             Spacer()
-            if let f = app.flash { Text(f).foregroundStyle(Color.primary.opacity(0.7)) }
+            if let f = app.flash, !f.isEmpty { Text(f).foregroundStyle(Color.primary.opacity(0.7)) }
+            if app.store.logbook { Text("logbook").foregroundStyle(Color.primary) }
             ShapeCounts()
             HStack(spacing: 5) {
                 Circle().fill(syncColor).frame(width: 6, height: 6)
@@ -339,18 +385,26 @@ struct AgentPanel: View {
     let todoID: String
     var focus: FocusState<Field?>.Binding
     @State private var notes = ""
+    @State private var title = ""
 
     var body: some View {
         let todo = app.store.todo(todoID)
         let run = app.runner.run(for: todoID)
         VStack(alignment: .leading, spacing: 0) {
-            Text(todo?.title ?? "")
+            TextField("", text: $title, axis: .vertical)
+                .textFieldStyle(.plain)
                 .fontWeight(.semibold)
-                .lineLimit(3)
+                .lineLimit(1...4)
+                .focused(focus, equals: .title)
+                .onSubmit { app.store.rename(todoID, title); focus.wrappedValue = .notes }
+                .onExitCommand { title = todo?.title ?? ""; focus.wrappedValue = .list }
+                .onChange(of: focus.wrappedValue) { old, new in
+                    if old == .title && new != .title { app.store.rename(todoID, title) }
+                }
                 .padding(.horizontal, 16).padding(.top, 30).padding(.bottom, 8)
             ZStack(alignment: .topLeading) {
                 if notes.isEmpty {
-                    Text("notes for the agent (N)").foregroundStyle(Theme.faint).padding(.leading, 5)
+                    Text("notes").foregroundStyle(Theme.faint).padding(.leading, 5)
                 }
                 TextEditor(text: $notes)
                     .scrollContentBackground(.hidden)
@@ -360,6 +414,7 @@ struct AgentPanel: View {
             .font(Theme.small)
             .frame(height: 64)
             .padding(.horizontal, 11)
+            if todo?.isSection != true {
             Rectangle().fill(Theme.line).frame(height: 1).padding(.top, 6)
             HStack {
                 if let run {
@@ -384,6 +439,9 @@ struct AgentPanel: View {
                 }
                 .onChange(of: run?.output.count ?? 0) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
+            } else {
+                Spacer()
+            }
         }
         .onAppear { load() }
         .onChange(of: todoID) { _, _ in load() }
@@ -393,6 +451,7 @@ struct AgentPanel: View {
     }
 
     private func load() {
+        title = app.store.todo(todoID)?.title ?? ""
         notes = app.store.todo(todoID)?.notes ?? ""
         app.runner.loadHistory(todoID)
     }
@@ -419,7 +478,10 @@ struct HelpOverlay: View {
         ("c", "cancel run"),
         ("tab  ⇧tab", "nest under item above / un-nest"),
         ("← →  h l", "collapse / expand, jump to parent"),
-        ("p  ⌘j", "agent panel"),
+        ("dbl-click  p", "details: title, notes, agent output"),
+        ("drag", "reorder · drop on right half to nest"),
+        ("# name ↩", "add a section header"),
+        ("L", "logbook: completed before today"),
         ("N", "edit notes"),
         ("H", "hide / show completed"),
         ("⌘k", "palette: agent, model, folder, autonomy"),
@@ -507,5 +569,67 @@ struct RowMenu: View {
         Divider()
         Button("Edit") { app.store.selection = todo.id; app.editingID = todo.id; app.focusRequest = .edit }
         Button("Delete") { app.store.delete(todo.id) }
+    }
+}
+
+
+// MARK: drag and drop
+
+struct RowDrop: DropDelegate {
+    let target: Todo
+    let level: Int
+    let app: AppModel
+
+    private func hint(_ info: DropInfo) -> DropHint {
+        let rowHeight: CGFloat = target.isSection && level == 0 ? 36 : 27
+        let after = info.location.y > rowHeight / 2
+        // Dragging well right of the title start on the lower half nests under this row.
+        let titleStart = 8 + CGFloat(level) * 22 + 34
+        let nest = after && app.store.filter == nil && !app.store.logbook && info.location.x > titleStart + 60
+        return DropHint(id: target.id, after: after, nest: nest)
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        guard let id = app.draggingID else { return false }
+        return id != target.id && !app.store.logbook
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        let h = hint(info)
+        if app.dropHint != h { app.dropHint = h }
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if app.dropHint?.id == target.id { app.dropHint = nil }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer { app.dropHint = nil; app.draggingID = nil }
+        guard let id = app.draggingID, id != target.id else { return false }
+        let h = hint(info)
+        if h.nest { app.store.nest(id, under: target.id) }
+        else { app.store.place(id, relativeTo: target.id, after: h.after) }
+        return true
+    }
+}
+
+
+/// Drop target for the empty area below the last row.
+struct EndDrop: DropDelegate {
+    static let id = "__end__"
+    let app: AppModel
+
+    func validateDrop(info: DropInfo) -> Bool { app.draggingID != nil && !app.store.logbook }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        if app.dropHint?.id != Self.id { app.dropHint = DropHint(id: Self.id, after: false, nest: false) }
+        return DropProposal(operation: .move)
+    }
+    func dropExited(info: DropInfo) { if app.dropHint?.id == Self.id { app.dropHint = nil } }
+    func performDrop(info: DropInfo) -> Bool {
+        defer { app.dropHint = nil; app.draggingID = nil }
+        guard let id = app.draggingID else { return false }
+        app.store.moveToEnd(id)
+        return true
     }
 }

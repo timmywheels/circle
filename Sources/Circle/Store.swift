@@ -21,6 +21,10 @@ final class Store {
     var filter: Kind? { didSet { rebuild() } }
     /// Open items per shape, for the status line.
     private(set) var openCounts: [Kind: Int] = [:]
+    /// Logbook view: everything completed before today, newest first.
+    var logbook = false { didSet { rebuild() } }
+    @ObservationIgnored private var dayStart: Int64 = Store.startOfToday()
+    static func startOfToday() -> Int64 { Int64(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1000) }
     /// Collapsed parents (local to this Mac).
     private(set) var collapsed: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "collapsed") ?? []) {
         didSet { UserDefaults.standard.set(Array(collapsed), forKey: "collapsed") }
@@ -65,7 +69,7 @@ final class Store {
         var counts: [Kind: Int] = [:]
         var k: [String: [Todo]] = [:]
         for t in live {
-            if !t.done { counts[t.kind, default: 0] += 1 }
+            if !t.done && !t.isSection { counts[t.kind, default: 0] += 1 }
             k[parentID(t), default: []].append(t)
         }
         for key in k.keys { k[key]!.sort(by: Self.order) }
@@ -75,23 +79,35 @@ final class Store {
         for (p, cs) in k where !p.isEmpty { prog[p] = (cs.filter(\.done).count, cs.count) }
         progress = prog
 
+        // Archived = completed before today, with nothing open underneath. Out of the list, into the logbook.
+        var memo: [String: Bool] = [:]
+        func archived(_ t: Todo) -> Bool {
+            if let m = memo[t.id] { return m }
+            memo[t.id] = false // cycle guard
+            let r = t.done && !t.isSection && t.updatedAt < dayStart && (k[t.id] ?? []).allSatisfy { archived($0) }
+            memo[t.id] = r
+            return r
+        }
+
         var rows: [Todo] = []
         var d: [String: Int] = [:]
-        if let f = filter {
-            rows = live.filter { $0.kind == f && !(hideDone && $0.done) }.sorted(by: Self.order)
+        if logbook {
+            rows = live.filter { archived($0) }.sorted { $0.updatedAt > $1.updatedAt }
+        } else if let f = filter {
+            rows = live.filter { $0.kind == f && !$0.isSection && !archived($0) && !(hideDone && $0.done) }.sorted(by: Self.order)
         } else {
             var seen = Set<String>()
             func walk(_ p: String, _ level: Int) {
                 for t in k[p] ?? [] where !seen.contains(t.id) {
                     seen.insert(t.id)
-                    if hideDone && t.done { continue }
+                    if archived(t) || (hideDone && t.done) { continue }
                     rows.append(t); d[t.id] = level
                     if !collapsed.contains(t.id) { walk(t.id, level + 1) }
                 }
             }
             walk("", 0)
             // Anything unreachable (a parent cycle from conflicting edits) shows at the top level.
-            for t in live.sorted(by: Self.order) where !seen.contains(t.id) && !isHiddenByAncestor(t) && !(hideDone && t.done) {
+            for t in live.sorted(by: Self.order) where !seen.contains(t.id) && !isHiddenByAncestor(t) && !archived(t) && !(hideDone && t.done) {
                 rows.append(t); d[t.id] = 0; seen.insert(t.id)
             }
         }
@@ -162,13 +178,14 @@ final class Store {
     }
 
     func setKind(_ id: String, _ kind: Kind) {
-        guard var t = byID[id], t.kind != kind else { return }
+        guard var t = byID[id], t.kind != kind, !t.isSection else { return }
         t.kind = kind
         commit([t.touched(by: device)])
     }
 
     func toggle(_ id: String) {
         guard var t = byID[id] else { return }
+        if t.isSection { setCollapsed(id, !collapsed.contains(id)); return }
         t.done.toggle()
         commit([t.touched(by: device)])
     }
@@ -235,6 +252,46 @@ final class Store {
         commit([t.touched(by: device)])
     }
 
+    /// Drag and drop: put `id` just before or after `target` as its sibling.
+    func place(_ id: String, relativeTo target: String, after: Bool) {
+        guard id != target, var t = byID[id], let tg = byID[target] else { return }
+        if descendants(id).contains(where: { $0.id == target }) { return }   // not into its own subtree
+        // Dropping below an expanded parent means "first child", which is where the line appears.
+        if after && filter == nil && hasChildren(target) && !collapsed.contains(target), let first = kids[target]?.first {
+            t.parent = target
+            t.sort = first.id == id ? first.sort : first.sort - 1
+            commit([t.touched(by: device)]); selection = id; return
+        }
+        let p = parentID(tg)
+        let sibs = (kids[p] ?? []).filter { $0.id != id }
+        guard let i = sibs.firstIndex(where: { $0.id == target }) else { return }
+        if after { t.sort = i + 1 < sibs.count ? (tg.sort + sibs[i + 1].sort) / 2 : tg.sort + 1 }
+        else { t.sort = i > 0 ? (sibs[i - 1].sort + tg.sort) / 2 : tg.sort - 1 }
+        t.parent = p
+        commit([t.touched(by: device)])
+        selection = id
+    }
+
+    /// Drag and drop into the empty space under the list: last top-level item.
+    func moveToEnd(_ id: String) {
+        guard var t = byID[id] else { return }
+        t.parent = ""
+        t.sort = ((kids[""] ?? []).filter { $0.id != id }.last?.sort ?? 0) + 1
+        commit([t.touched(by: device)])
+        selection = id
+    }
+
+    /// Drag and drop onto the right side of a row: nest as its last child.
+    func nest(_ id: String, under target: String) {
+        guard id != target, var t = byID[id], byID[target] != nil else { return }
+        if descendants(id).contains(where: { $0.id == target }) { return }
+        t.parent = target
+        t.sort = ((kids[target] ?? []).filter { $0.id != id }.last?.sort ?? 0) + 1
+        collapsed.remove(target)
+        commit([t.touched(by: device)])
+        selection = id
+    }
+
     /// Makes the item a child of the sibling above it (tab).
     func indent(_ id: String) {
         guard var t = byID[id], filter == nil else { return }
@@ -293,6 +350,8 @@ final class Store {
     }
 
     private func poll() {
+        let today = Self.startOfToday()
+        if today != dayStart { dayStart = today; rebuild() }   // midnight: yesterday's done items move to the logbook
         let repo = repo, known = lastVersion
         q.async { [weak self] in
             let v = repo.dataVersion()

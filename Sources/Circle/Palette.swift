@@ -118,6 +118,9 @@ struct Palette: View {
         items.append(PaletteItem(id: "hide", title: store.hideDone ? "show completed" : "hide completed", detail: "H") {
             store.hideDone.toggle()
         })
+        items.append(PaletteItem(id: "logbook", title: store.logbook ? "back to list" : "logbook", detail: "L") {
+            store.logbook.toggle()
+        })
         items.append(PaletteItem(id: "clear", title: "clear completed", detail: "undo with u") { store.clearCompleted() })
         items.append(PaletteItem(id: "mcp", title: "install mcp in agents", detail: "claude, codex") {
             app.say(reg.installMCP())

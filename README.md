@@ -4,10 +4,8 @@ A native macOS todo list that feels like a text editor. Local-first, synced thro
 
 ## Setup
 
-Copy `.circle.env.example` to `.circle.env` and fill it in: Cloudflare account email, and optionally your Developer ID identity and notary profile.
-
 1. Double-click `scripts/build.command`. It builds with SwiftPM, installs `~/Applications/Circle.app` and opens it. Needs Xcode or the Command Line Tools (macOS 14+).
-2. Double-click `scripts/deploy.command`. It signs in to the Cloudflare account set in `.circle.env`, deploys the `circle-sync` Worker, sets a random token and writes `~/Library/Application Support/Circle/sync.json`. Then in Circle: ⌘K → `reconnect sync`.
+2. Double-click `scripts/deploy.command`. It signs in to Cloudflare as tim@timwheeler.com, deploys the `circle-sync` Worker, sets a random token and writes `~/Library/Application Support/Circle/sync.json`. Then in Circle: ⌘K → `reconnect sync`.
 3. Optional: ⌘K → `install circle mcp in agents` registers the todo MCP server with Claude Code and Codex globally, so any session can read and update your list.
 
 For another Mac, build there and copy `sync.json` to the same path.
@@ -28,9 +26,9 @@ Hand a todo to an agent three ways: end it with `@claude` / `@codex` as you type
 
 `tab` nests the selected todo under the one above it, `shift-tab` un-nests it. `←` / `→` collapse and expand. Parents show `done/total` for their direct children. Deleting a parent deletes its subtree, and one undo restores it. Agents add follow-ups as subtasks of the todo they are working on, and get the subtasks in their prompt.
 
-## Releases
+## Sections and the logbook
 
-`scripts/release.command` builds, signs with your Developer ID, notarizes, staples and zips `build/Circle.zip`. Store notary credentials once with `xcrun notarytool store-credentials circle-notary --apple-id <your Apple ID> --team-id <TEAMID>`.
+Type `# Work` to add a section header, then nest todos under it with `tab` or by dragging. Anything completed before today leaves the list on its own; `L` opens the logbook, grouped by day, where `space` restores an item.
 
 ## Keys
 

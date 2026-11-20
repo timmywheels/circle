@@ -133,3 +133,9 @@ public struct SyncConfig: Codable {
         return c.url
     }
 }
+
+public extension Todo {
+    /// A title starting with "# " makes the row a section header.
+    var isSection: Bool { title.hasPrefix("# ") }
+    var displayTitle: String { isSection ? String(title.dropFirst(2)) : title }
+}
