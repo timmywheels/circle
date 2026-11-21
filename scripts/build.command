@@ -15,11 +15,21 @@ cp "$BIN/Circle" "$APP/Contents/MacOS/Circle"
 cp "$BIN/circle-mcp" "$APP/Contents/MacOS/circle-mcp"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
-# App icon with light and dark variants (Assets.car + AppIcon.icns).
-xcrun actool Resources/Assets.xcassets --compile "$APP/Contents/Resources" \
-  --platform macosx --minimum-deployment-target 14.0 --app-icon AppIcon \
-  --output-partial-info-plist build/assets-info.plist --warnings --errors --notices >/dev/null
-echo "icon appearances:"; xcrun assetutil --info "$APP/Contents/Resources/Assets.car" | grep -o '"Appearance" : "[^"]*"' | sort | uniq -c || true
+# App icon. Prefer the macOS 26 Icon Composer format (AppIcon.icon: full-shape, Liquid Glass),
+# fall back to the classic asset catalog if this actool can't compile it.
+ICON_NAME=AppIcon
+if ! { xcrun actool Resources/AppIcon.icon --compile "$APP/Contents/Resources" \
+     --platform macosx --minimum-deployment-target 14.0 --app-icon AppIcon \
+     --output-partial-info-plist build/assets-info.plist --warnings --errors --notices > build/actool.log 2>&1 \
+     && [ -f "$APP/Contents/Resources/Assets.car" ]; }; then
+  echo "AppIcon.icon failed (see build/actool.log), using legacy icon"
+  ICON_NAME=AppIconLegacy
+  xcrun actool Resources/Assets.xcassets --compile "$APP/Contents/Resources" \
+    --platform macosx --minimum-deployment-target 14.0 --app-icon AppIconLegacy \
+    --output-partial-info-plist build/assets-info.plist --warnings --errors --notices >> build/actool.log 2>&1
+fi
+/usr/libexec/PlistBuddy -c "Set :CFBundleIconName $ICON_NAME" -c "Set :CFBundleIconFile $ICON_NAME" "$APP/Contents/Info.plist"
+echo "icon: $ICON_NAME"; grep -iE "error|warning" build/actool.log | head -5 || true
 
 # Sign with your Developer ID (hardened runtime, ready for notarization); ad-hoc if it's missing.
 IDENTITY="${SIGNING_IDENTITY:-}"
