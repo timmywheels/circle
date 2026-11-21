@@ -344,18 +344,18 @@ final class Store {
         let a = sibs[j].sort
         let b: Double = (beyond >= 0 && beyond < sibs.count) ? sibs[beyond].sort : a + Double(dir) * 2
         t.sort = (a + b) / 2
-        commit([t.touched(by: device)])
+        if let old = byID[id] { pushUndo([old]) }; commit([t.touched(by: device)])
     }
 
     /// Drag and drop: put `id` just before or after `target` as its sibling.
-    func place(_ id: String, relativeTo target: String, after: Bool) {
+    func place(_ id: String, relativeTo target: String, after: Bool, asSibling: Bool = false) {
         guard id != target, var t = byID[id], let tg = byID[target] else { return }
         if descendants(id).contains(where: { $0.id == target }) { return }   // not into its own subtree
         // Dropping below an expanded parent means "first child", which is where the line appears.
-        if after && filter == nil && hasChildren(target) && !collapsed.contains(target), let first = kids[target]?.first {
+        if after && !asSibling && filter == nil && hasChildren(target) && !collapsed.contains(target), let first = kids[target]?.first {
             t.parent = target
             t.sort = first.id == id ? first.sort : first.sort - 1
-            commit([t.touched(by: device)]); selection = id; return
+            if let old = byID[id] { pushUndo([old]) }; commit([t.touched(by: device)]); selection = id; return
         }
         let p = parentID(tg)
         let sibs = (kids[p] ?? []).filter { $0.id != id }
@@ -363,8 +363,26 @@ final class Store {
         if after { t.sort = i + 1 < sibs.count ? (tg.sort + sibs[i + 1].sort) / 2 : tg.sort + 1 }
         else { t.sort = i > 0 ? (sibs[i - 1].sort + tg.sort) / 2 : tg.sort - 1 }
         t.parent = p
-        commit([t.touched(by: device)])
+        if let old = byID[id] { pushUndo([old]) }; commit([t.touched(by: device)])
         selection = id
+    }
+
+    /// True when `id` sits somewhere under `ancestor`.
+    func isInside(_ id: String, _ ancestor: String) -> Bool {
+        var p = byID[id].map(parentID) ?? ""
+        var hops = 0
+        while !p.isEmpty, hops < 64 {
+            if p == ancestor { return true }
+            p = byID[p].map(parentID) ?? ""; hops += 1
+        }
+        return false
+    }
+
+    /// The ancestor of `id` (or `id` itself) at the given depth.
+    func ancestor(of id: String, atDepth d: Int) -> String? {
+        var cur = id
+        while let level = depth[cur], level > d, let t = byID[cur] { cur = parentID(t) }
+        return depth[cur] == d ? cur : nil
     }
 
     /// Drag and drop into the empty space under the list: last top-level item.
@@ -372,7 +390,7 @@ final class Store {
         guard var t = byID[id] else { return }
         t.parent = ""
         t.sort = ((kids[""] ?? []).filter { $0.id != id }.last?.sort ?? 0) + 1
-        commit([t.touched(by: device)])
+        if let old = byID[id] { pushUndo([old]) }; commit([t.touched(by: device)])
         selection = id
     }
 
@@ -383,7 +401,7 @@ final class Store {
         t.parent = target
         t.sort = ((kids[target] ?? []).filter { $0.id != id }.last?.sort ?? 0) + 1
         collapsed.remove(target)
-        commit([t.touched(by: device)])
+        if let old = byID[id] { pushUndo([old]) }; commit([t.touched(by: device)])
         selection = id
     }
 
@@ -396,7 +414,7 @@ final class Store {
         t.parent = newParent.id
         t.sort = ((kids[newParent.id] ?? []).last?.sort ?? 0) + 1
         collapsed.remove(newParent.id)
-        commit([t.touched(by: device)])
+        if let old = byID[id] { pushUndo([old]) }; commit([t.touched(by: device)])
     }
 
     /// Moves the item out one level, right after its old parent (shift-tab).
@@ -406,7 +424,7 @@ final class Store {
         guard !p.isEmpty, let parent = byID[p] else { return }
         t.parent = parentID(parent)
         t.sort = sortAfter(parent)
-        commit([t.touched(by: device)])
+        if let old = byID[id] { pushUndo([old]) }; commit([t.touched(by: device)])
     }
 
     func setCollapsed(_ id: String, _ on: Bool) {

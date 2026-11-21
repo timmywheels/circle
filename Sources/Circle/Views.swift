@@ -311,12 +311,14 @@ struct TodoRow: View {
             }
         }
         .padding(.leading, 8).padding(.trailing, 16)
-        .padding(.top, todo.isSection && level == 0 ? 14 : 5).padding(.bottom, 5)
+        .padding(.vertical, 5)
         .background(selected ? (focus.wrappedValue == .list ? Color.accentColor.opacity(0.16) : Theme.selection) : .clear)
+        // Breathing room above top-level sections sits outside the highlight.
+        .padding(.top, todo.isSection && level == 0 ? 9 : 0)
         .overlay(alignment: app.dropHint?.after == true ? .bottom : .top) {
             if let h = app.dropHint, h.id == todo.id {
                 Rectangle().fill(Color.accentColor).frame(height: 2)
-                    .padding(.leading, 8 + CGFloat(level + (h.nest ? 1 : 0)) * 22 + 14)
+                    .padding(.leading, 8 + CGFloat(h.depth) * 22 + 14)
             }
         }
         .contentShape(Rectangle())

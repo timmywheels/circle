@@ -76,6 +76,10 @@ struct DropHint: Equatable {
     let id: String
     let after: Bool
     let nest: Bool
+    /// Indent level the drop line shows (and the item will land at).
+    var depth: Int = 0
+    /// For "after" drops at a shallower level: the ancestor of `id` to place after.
+    var anchor: String? = nil
 }
 
 @MainActor @Observable
@@ -351,6 +355,7 @@ final class AppModel {
         guard let id = draggingID, let h = dropTarget(at: p) else { return }
         if h.id == Self.endDropID { store.moveToEnd(id) }
         else if h.nest { store.nest(id, under: h.id) }
+        else if let a = h.anchor { store.place(id, relativeTo: a, after: true, asSibling: true) }
         else { store.place(id, relativeTo: h.id, after: h.after) }
     }
 
@@ -362,14 +367,30 @@ final class AppModel {
             if t.id == dragged { return nil }
             let after = p.y > f.midY
             let level = store.filter == nil ? (store.depth[t.id] ?? 0) : 0
+            guard after, store.filter == nil else { return DropHint(id: t.id, after: after, nest: false, depth: level) }
             let titleStart = 8 + CGFloat(level) * 22 + 34
-            let nest = after && store.filter == nil && p.x > titleStart + 60
-            return DropHint(id: t.id, after: after, nest: nest)
+            if p.x > titleStart + 60 { return DropHint(id: t.id, after: true, nest: true, depth: level + 1) }
+            // Below a row, the cursor's x picks the level: anywhere from the row's own level
+            // out to the level of the next row, so the end of a group can be un-nested.
+            let next = nextRow(after: t.id, skipping: dragged)
+            let minDepth = next.map { store.depth[$0.id] ?? 0 } ?? 0
+            if minDepth > level { return DropHint(id: t.id, after: true, nest: false, depth: level + 1) } // first child
+            let draggedIsSection = store.todo(dragged)?.isSection == true
+            let fromX = Int(((p.x - 8 - 14) / 22).rounded(.down))
+            let d = draggedIsSection ? minDepth : min(max(fromX, minDepth), level)
+            let anchor = d == level ? nil : store.ancestor(of: t.id, atDepth: d)
+            return DropHint(id: t.id, after: true, nest: false, depth: d, anchor: anchor)
         }
         if let last = store.ordered.last, let f = rowFrames[last.id], p.y >= f.maxY, last.id != dragged {
             return DropHint(id: Self.endDropID, after: false, nest: false)
         }
         return nil
+    }
+
+    /// The next visible row below `id`, ignoring the dragged item and everything under it.
+    private func nextRow(after id: String, skipping dragged: String) -> Todo? {
+        guard let i = store.ordered.firstIndex(where: { $0.id == id }) else { return nil }
+        return store.ordered[(i + 1)...].first { $0.id != dragged && !store.isInside($0.id, dragged) }
     }
 
     func say(_ s: String) {
