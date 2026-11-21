@@ -425,26 +425,24 @@ struct AgentPanel: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
                     .help(todo.map { Stamps.text(for: $0) } ?? "")
+                    .contextMenu { if let t = todo { RowMenu(todo: t) } }
                     .onTapGesture { title = todo?.title ?? ""; editingTitle = true }
             }
             }
             .padding(.leading, 16).padding(.trailing, 16).padding(.top, 30).padding(.bottom, 8)
-            if let t = todo, !t.isSection, t.remindAt > 0 || app.remindEditing {
-                ReminderField(todo: t, focus: focus).padding(.horizontal, 16).padding(.bottom, 6)
-            }
             ZStack(alignment: .topLeading) {
                 if notes.isEmpty {
                     Text("notes").foregroundStyle(Theme.faint).padding(.leading, 5)
                 }
                 TextEditor(text: $notes)
                     .scrollContentBackground(.hidden)
+                    .lineSpacing(3)
                     .focused(focus, equals: .notes)
                     .onExitCommand { app.focusRequest = .list }
             }
-            .font(Theme.small)
-            .frame(height: 64)
+            .font(Theme.font)
+            .frame(minHeight: 80, maxHeight: run == nil ? .infinity : 260)
             .padding(.horizontal, 11)
-            LinksBlock(todoID: todoID)
             if todo?.isSection != true, run != nil {
             Rectangle().fill(Theme.line).frame(height: 1).padding(.top, 6)
             HStack {
@@ -470,9 +468,8 @@ struct AgentPanel: View {
                 }
                 .onChange(of: run?.output.count ?? 0) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            } else {
-                Spacer()
             }
+            if let t = todo { DetailsFooter(todo: t, focus: focus) }
         }
         .modifier(PanelKeys(focus: focus, active: app.compact))
         .overlay(alignment: .topTrailing) {
@@ -602,19 +599,88 @@ struct RowMenu: View {
     let todo: Todo
 
     var body: some View {
-        Button(todo.done ? "Mark Not Done" : "Mark Done") { app.store.toggle(todo.id) }
-        Divider()
-        if let a = app.registry.current {
-            Button("△  Hand to \(a.id) · \(app.registry.model)") { app.store.selection = todo.id; app.handToAgent(todo.id) }
+        if todo.isSection {
+            Button("Edit") { edit() }
+            Button("Delete Section") { app.store.delete(todo.id) }
+        } else {
+            Button(todo.done ? "Mark Not Done" : "Mark Done") { app.store.toggle(todo.id) }
+            Button("Open Details") { app.store.selection = todo.id; app.panelOpen = true }
+            Divider()
+            if let a = app.registry.current {
+                Button("△  Hand to \(a.id) · \(app.registry.model)") { app.store.selection = todo.id; app.handToAgent(todo.id) }
+            }
+            Button("○  Mine") { app.store.setKind(todo.id, .mine) }
+            Button("□  Waiting") { app.store.setKind(todo.id, .waiting) }
+            Divider()
+            Menu(todo.remindAt > 0 ? "Remind · \(When.short(todo.remindAt))" : "Remind") {
+                ForEach(Self.presets.indices, id: \.self) { i in
+                    Button(Self.presets[i].0) { remind(Self.presets[i].1, keepRule: true) }
+                }
+                Divider()
+                Button("Custom…") { app.store.selection = todo.id; app.perform(.remind) }
+                if todo.remindAt > 0 {
+                    Divider()
+                    Button("Clear Reminder") { app.store.setReminder(todo.id, at: 0, rule: "") }
+                }
+            }
+            Menu(todo.repeatRule.isEmpty ? "Repeat" : "Repeat · \(When.describe(rule: todo.repeatRule))") {
+                ForEach(Self.rules.indices, id: \.self) { i in
+                    let (label, rule) = Self.rules[i]
+                    Button((todo.repeatRule == rule ? "✓ " : "") + label) { setRepeat(rule) }
+                }
+                if !todo.repeatRule.isEmpty {
+                    Divider()
+                    Button("Don't Repeat") { setRepeat("") }
+                }
+            }
+            Divider()
+            Button("Nest Under Item Above") { app.store.indent(todo.id) }
+            Button("Un-nest") { app.store.outdent(todo.id) }
+            Divider()
+            Button("Edit Title") { edit() }
+            Button("Copy as [[link]]") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString("[[\(todo.displayTitle)]]", forType: .string)
+            }
+            Menu("Info") {
+                Text(Stamps.text(for: todo))
+                if todo.remindAt > 0 { Text("⏰ " + When.long(todo.remindAt, rule: todo.repeatRule)) }
+                Text("id \(todo.id)")
+            }
+            Divider()
+            Button("Delete") { app.store.delete(todo.id) }
         }
-        Button("○  Mine") { app.store.setKind(todo.id, .mine) }
-        Button("□  Waiting") { app.store.setKind(todo.id, .waiting) }
-        Divider()
-        Button("Nest Under Item Above") { app.store.indent(todo.id) }
-        Button("Un-nest") { app.store.outdent(todo.id) }
-        Divider()
-        Button("Edit") { app.store.selection = todo.id; app.editingID = todo.id; app.focusRequest = .edit }
-        Button("Delete") { app.store.delete(todo.id) }
+    }
+
+    static let presets: [(String, String)] = [
+        ("In 30 Minutes", "30m"), ("In 1 Hour", "1h"), ("This Evening", "6pm"),
+        ("Tomorrow Morning", "tomorrow"), ("Next Monday", "next monday"),
+    ]
+    static let rules: [(String, String)] = [
+        ("Daily", "day:1"), ("Weekdays", "weekdays"), ("Weekly", "week:1"), ("Monthly", "month:1"), ("Yearly", "year:1"),
+    ]
+
+    private func edit() {
+        app.store.selection = todo.id
+        if app.panelOpen { app.titleEditRequest += 1 } else { app.editingID = todo.id; app.focusRequest = .edit }
+    }
+
+    private func remind(_ phrase: String, keepRule: Bool) {
+        guard let p = When.parse(phrase, defaultHour: app.settings.reminderHour) else { return }
+        let ms = Int64(p.date.timeIntervalSince1970 * 1000)
+        app.store.setReminder(todo.id, at: ms, rule: keepRule && p.rule.isEmpty ? todo.repeatRule : p.rule)
+        app.say("⏰ " + When.long(ms, rule: keepRule ? todo.repeatRule : p.rule))
+    }
+
+    /// Repeating needs a time: with none set, start tomorrow at the reminder hour.
+    private func setRepeat(_ rule: String) {
+        if rule.isEmpty { app.store.setReminder(todo.id, at: todo.remindAt, rule: ""); return }
+        var at = todo.remindAt
+        if at == 0, let p = When.parse("tomorrow", defaultHour: app.settings.reminderHour) {
+            at = Int64(p.date.timeIntervalSince1970 * 1000)
+        }
+        app.store.setReminder(todo.id, at: at, rule: rule)
+        app.say("↻ " + When.long(at, rule: rule))
     }
 }
 
@@ -830,5 +896,35 @@ struct ReminderField: View {
         }
         app.remindEditing = false
         app.focusRequest = .list
+    }
+}
+
+
+/// The quiet bottom of the details panel: links, reminder, timestamps.
+struct DetailsFooter: View {
+    @Environment(AppModel.self) private var app
+    let todo: Todo
+    var focus: FocusState<Field?>.Binding
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Rectangle().fill(Theme.line).frame(height: 1).padding(.horizontal, -16)
+            LinksBlock(todoID: todo.id).padding(.horizontal, -16).padding(.top, -6)
+            if !todo.isSection && (todo.remindAt > 0 || app.remindEditing) {
+                ReminderField(todo: todo, focus: focus)
+            }
+            HStack(spacing: 10) {
+                Text(Stamps.text(for: todo)).lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 8)
+                if !todo.isSection && todo.remindAt == 0 && !app.remindEditing {
+                    Button { app.store.selection = todo.id; app.perform(.remind) } label: { Text("⏰ remind") }
+                        .buttonStyle(.plain)
+                        .help("set a reminder (m)")
+                }
+            }
+            .foregroundStyle(Theme.faint)
+        }
+        .font(Theme.small)
+        .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 10)
     }
 }
