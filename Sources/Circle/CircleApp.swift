@@ -99,9 +99,12 @@ final class AppModel {
     var paletteOpen = false { didSet { if !paletteOpen { focusRequest = .list } } }
     var panelOpen = false
     var helpOpen = false
-    /// Drag and drop state for the list.
+    /// In-app drag state for the list.
+    static let endDropID = "__end__"
     var dropHint: DropHint?
-    @ObservationIgnored var draggingID: String?
+    var draggingID: String?
+    var dragPoint: CGPoint = .zero
+    @ObservationIgnored var rowFrames: [String: CGRect] = [:]
     var flash: String?
     @ObservationIgnored var openWindow: OpenWindowAction?
     @ObservationIgnored private var flashWork: DispatchWorkItem?
@@ -237,6 +240,40 @@ final class AppModel {
         keymap.reload()
         AppDelegate.shared?.registerHotkey()
         say(keymap.error ?? "keymap reloaded")
+    }
+
+    func dragMoved(_ id: String, to p: CGPoint) {
+        guard !store.logbook else { return }
+        if draggingID != id { draggingID = id; store.selection = id }
+        dragPoint = p
+        let h = dropTarget(at: p)
+        if dropHint != h { dropHint = h }
+    }
+
+    func dragEnded(at p: CGPoint) {
+        defer { draggingID = nil; dropHint = nil }
+        guard let id = draggingID, let h = dropTarget(at: p) else { return }
+        if h.id == Self.endDropID { store.moveToEnd(id) }
+        else if h.nest { store.nest(id, under: h.id) }
+        else { store.place(id, relativeTo: h.id, after: h.after) }
+    }
+
+    /// Which row (and which half of it) the cursor is over, in list coordinates.
+    private func dropTarget(at p: CGPoint) -> DropHint? {
+        guard let dragged = draggingID else { return nil }
+        for t in store.ordered {
+            guard let f = rowFrames[t.id], p.y >= f.minY, p.y < f.maxY else { continue }
+            if t.id == dragged { return nil }
+            let after = p.y > f.midY
+            let level = store.filter == nil ? (store.depth[t.id] ?? 0) : 0
+            let titleStart = 8 + CGFloat(level) * 22 + 34
+            let nest = after && store.filter == nil && p.x > titleStart + 60
+            return DropHint(id: t.id, after: after, nest: nest)
+        }
+        if let last = store.ordered.last, let f = rowFrames[last.id], p.y >= f.maxY, last.id != dragged {
+            return DropHint(id: Self.endDropID, after: false, nest: false)
+        }
+        return nil
     }
 
     func say(_ s: String) {

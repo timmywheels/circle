@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 import CircleCore
 
 enum Theme {
@@ -173,19 +172,19 @@ struct TodoList: View {
                     }
                 }
                 .padding(.vertical, 6)
+                .coordinateSpace(.named(listSpace))
+                .overlay(alignment: .topLeading) { DragGhost() }
                 if store.ordered.isEmpty {
                     Text(store.logbook ? "nothing in the logbook yet. completed items land here the next day."
                          : store.hideDone ? "all clear. completed items hidden." : "nothing here. start typing.")
                         .foregroundStyle(Theme.faint)
                         .padding(.top, 40)
                 }
-                if app.dropHint?.id == EndDrop.id {
+                if app.dropHint?.id == AppModel.endDropID {
                     Rectangle().fill(Color.accentColor).frame(height: 2).padding(.leading, 30)
                 }
             }
             .scrollIndicators(.never)
-            // Rows handle their own drops; anything that lands in the empty space below goes to the end.
-            .onDrop(of: [.text], delegate: EndDrop(app: app))
             .onChange(of: store.selection) { _, id in if let id { proxy.scrollTo(id) } }
         }
         .focusable()
@@ -307,11 +306,14 @@ struct TodoRow: View {
             if NSApp.currentEvent?.clickCount == 2 { app.panelOpen = true; focus.wrappedValue = .list }
             else { focus.wrappedValue = .list }
         }
-        .onDrag {
-            app.draggingID = todo.id
-            return NSItemProvider(object: todo.id as NSString)
-        }
-        .onDrop(of: [.text], delegate: RowDrop(target: todo, level: level, app: app))
+        .opacity(app.draggingID == todo.id ? 0.35 : 1)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(listSpace)) } action: { app.rowFrames[todo.id] = $0 }
+        // In-app drag: no system drag session, so nothing floats or animates after the drop.
+        .gesture(
+            DragGesture(minimumDistance: 4, coordinateSpace: .named(listSpace))
+                .onChanged { v in app.dragMoved(todo.id, to: v.location) }
+                .onEnded { v in app.dragEnded(at: v.location) }
+        )
     }
 
     private func endEdit() {
@@ -575,67 +577,32 @@ struct RowMenu: View {
 }
 
 
-// MARK: drag and drop
+// MARK: drag
 
-struct RowDrop: DropDelegate {
-    let target: Todo
-    let level: Int
-    let app: AppModel
+let listSpace = "circle.list"
 
-    private func hint(_ info: DropInfo) -> DropHint {
-        let rowHeight: CGFloat = target.isSection && level == 0 ? 36 : 27
-        let after = info.location.y > rowHeight / 2
-        // Dragging well right of the title start on the lower half nests under this row.
-        let titleStart = 8 + CGFloat(level) * 22 + 34
-        let nest = after && app.store.filter == nil && !app.store.logbook && info.location.x > titleStart + 60
-        return DropHint(id: target.id, after: after, nest: nest)
-    }
+/// The row being dragged, following the cursor. Never intercepts the mouse.
+struct DragGhost: View {
+    @Environment(AppModel.self) private var app
 
-    func validateDrop(info: DropInfo) -> Bool {
-        guard let id = app.draggingID else { return false }
-        return id != target.id && !app.store.logbook
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        let h = hint(info)
-        if app.dropHint != h { app.dropHint = h }
-        return DropProposal(operation: .move)
-    }
-
-    func dropExited(info: DropInfo) {
-        if app.dropHint?.id == target.id { app.dropHint = nil }
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        defer { app.dropHint = nil; app.draggingID = nil }
-        guard let id = app.draggingID, id != target.id else { return false }
-        let h = hint(info)
-        if h.nest { app.store.nest(id, under: target.id) }
-        else { app.store.place(id, relativeTo: target.id, after: h.after) }
-        return true
+    var body: some View {
+        if let id = app.draggingID, let t = app.store.todo(id) {
+            HStack(spacing: 8) {
+                Text(t.isSection ? "#" : t.glyph).foregroundStyle(Theme.dim)
+                Text(t.displayTitle).lineLimit(1)
+            }
+            .font(Theme.font)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(Theme.bg)
+            .clipShape(RoundedRectangle(cornerRadius: 5))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.primary.opacity(0.12)))
+            .shadow(color: .black.opacity(0.15), radius: 8, y: 3)
+            .frame(maxWidth: 360, alignment: .leading)
+            .offset(x: app.dragPoint.x + 10, y: app.dragPoint.y - 12)
+            .allowsHitTesting(false)
+        }
     }
 }
-
-
-/// Drop target for the empty area below the last row.
-struct EndDrop: DropDelegate {
-    static let id = "__end__"
-    let app: AppModel
-
-    func validateDrop(info: DropInfo) -> Bool { app.draggingID != nil && !app.store.logbook }
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        if app.dropHint?.id != Self.id { app.dropHint = DropHint(id: Self.id, after: false, nest: false) }
-        return DropProposal(operation: .move)
-    }
-    func dropExited(info: DropInfo) { if app.dropHint?.id == Self.id { app.dropHint = nil } }
-    func performDrop(info: DropInfo) -> Bool {
-        defer { app.dropHint = nil; app.draggingID = nil }
-        guard let id = app.draggingID else { return false }
-        app.store.moveToEnd(id)
-        return true
-    }
-}
-
 
 // MARK: links and timestamps
 
