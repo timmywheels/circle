@@ -230,7 +230,7 @@ final class AppModel {
         if isSection { store.moveToEnd(t.id) }
         if let w = when {
             store.setReminder(t.id, at: Int64(w.date.timeIntervalSince1970 * 1000), rule: w.rule)
-            say("⏰ " + When.long(Int64(w.date.timeIntervalSince1970 * 1000), rule: w.rule))
+            say("remind " + When.long(Int64(w.date.timeIntervalSince1970 * 1000), rule: w.rule))
         }
         if let a = agent {
             if a.id != registry.agentID { registry.choose(a, model: registry.models(for: a).first ?? "default") }

@@ -666,7 +666,7 @@ struct RowMenu: View {
             }
             Menu("Info") {
                 Text(Stamps.text(for: todo))
-                if todo.remindAt > 0 { Text("⏰ " + When.long(todo.remindAt, rule: todo.repeatRule)) }
+                if todo.remindAt > 0 { Text("remind " + When.long(todo.remindAt, rule: todo.repeatRule)) }
                 Text("id \(todo.id)")
             }
             Divider()
@@ -693,7 +693,7 @@ struct RowMenu: View {
         guard let p = When.parse(phrase, defaultHour: app.settings.reminderHour) else { return }
         let ms = Int64(p.date.timeIntervalSince1970 * 1000)
         app.store.setReminder(todo.id, at: ms, rule: keepRule && p.rule.isEmpty ? todo.repeatRule : p.rule)
-        app.say("⏰ " + When.long(ms, rule: keepRule ? todo.repeatRule : p.rule))
+        app.say("remind " + When.long(ms, rule: keepRule ? todo.repeatRule : p.rule))
     }
 
     /// Repeating needs a time: with none set, start tomorrow at the reminder hour.
@@ -884,7 +884,7 @@ struct ReminderField: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Text("⏰").foregroundStyle(Theme.faint)
+            Image(systemName: "alarm").font(.system(size: 11)).foregroundStyle(Theme.faint)
             TextField("", text: $text, prompt: Text(todo.remindAt > 0 ? When.long(todo.remindAt, rule: todo.repeatRule)
                                                                       : "when? tomorrow 9am, every weekday, 30m")
                 .foregroundColor(todo.remindAt > 0 ? Theme.dim : Theme.faint))
@@ -913,7 +913,7 @@ struct ReminderField: View {
         } else if let p = When.parse(spec, defaultHour: app.settings.reminderHour) {
             let ms = Int64(p.date.timeIntervalSince1970 * 1000)
             app.store.setReminder(todo.id, at: ms, rule: p.rule)
-            app.say("⏰ " + When.long(ms, rule: p.rule))
+            app.say("remind " + When.long(ms, rule: p.rule))
         } else {
             app.say("couldn't read “\(spec)” as a time")
             return
@@ -931,25 +931,50 @@ struct DetailsFooter: View {
     var focus: FocusState<Field?>.Binding
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Rectangle().fill(Theme.line).frame(height: 1).padding(.horizontal, -16)
-            LinksSection(todo: todo)
-            if !todo.isSection && (todo.remindAt > 0 || app.remindEditing) {
-                ReminderField(todo: todo, focus: focus)
+        let showRemind = !todo.isSection && (todo.remindAt > 0 || app.remindEditing)
+        let hasLinks = LinksSection.count(todo, app.store) > 0
+        VStack(alignment: .leading, spacing: 0) {
+            if hasLinks || showRemind {
+                Rectangle().fill(Theme.line).frame(height: 1)
+                VStack(alignment: .leading, spacing: 6) {
+                    LinksSection(todo: todo)
+                    if showRemind { ReminderField(todo: todo, focus: focus) }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 8)
             }
+            // Same line, height and type as the status bar on the left, so the bottom reads as one bar.
+            Rectangle().fill(Theme.line).frame(height: 1)
             HStack(spacing: 10) {
-                Text(Stamps.text(for: todo)).lineLimit(1).truncationMode(.tail)
+                Text(stamp).lineLimit(1).truncationMode(.tail)
+                    .help(Stamps.text(for: todo))
                 Spacer(minLength: 8)
-                if !todo.isSection && todo.remindAt == 0 && !app.remindEditing {
-                    Button { app.store.selection = todo.id; app.perform(.remind) } label: { Text("⏰ remind") }
-                        .buttonStyle(.plain)
-                        .help("set a reminder (m)")
+                if !todo.isSection {
+                    Button { app.store.selection = todo.id; app.perform(.remind) } label: {
+                        Image(systemName: todo.remindAt > 0 ? "alarm.fill" : "alarm")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(todo.remindAt > 0 ? Theme.dim : Theme.faint)
+                            .frame(width: 18, height: 18)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(todo.remindAt > 0 ? When.long(todo.remindAt, rule: todo.repeatRule) + "  (m to change)" : "Remind me (m)")
                 }
             }
+            .font(Theme.small)
             .foregroundStyle(Theme.faint)
+            .padding(.horizontal, 16)
+            .frame(height: 26)
         }
-        .font(Theme.small)
-        .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 10)
+    }
+
+    /// One short stamp for the bar ("edited 37 min ago"); the full line is in the tooltip.
+    private var stamp: String {
+        func rel(_ ms: Int64) -> String {
+            Date(timeIntervalSince1970: Double(ms) / 1000).formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated))
+        }
+        if todo.done { return "done " + rel(todo.completedAt) }
+        if todo.updatedAt - todo.createdAt > 60_000 { return "edited " + rel(todo.updatedAt) }
+        return "created " + rel(todo.createdAt)
     }
 }
 
@@ -960,9 +985,12 @@ struct LinksSection: View {
     let todo: Todo
     @AppStorage("linksOpen") private var open = false
 
+    static func count(_ todo: Todo, _ store: Store) -> Int {
+        Set((Links.names(in: todo.title) + Links.names(in: todo.notes)).map(Links.key)).count + store.backlinks(todo.id).count
+    }
+
     var body: some View {
-        let outCount = Set((Links.names(in: todo.title) + Links.names(in: todo.notes)).map(Links.key)).count
-        let total = outCount + app.store.backlinks(todo.id).count
+        let total = Self.count(todo, app.store)
         if total > 0 {
             VStack(alignment: .leading, spacing: 4) {
                 Button { open.toggle() } label: {

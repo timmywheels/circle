@@ -41,7 +41,7 @@ func text(_ s: String, error: Bool = false) -> [String: Any] {
 }
 
 func line(_ t: Todo) -> String {
-    let when = t.remindAt > 0 && !t.done ? "  ⏰ " + When.long(t.remindAt, rule: t.repeatRule) : ""
+    let when = t.remindAt > 0 && !t.done ? "  remind " + When.long(t.remindAt, rule: t.repeatRule) : ""
     return "\(t.glyph) \(t.id)  \(t.title)\(when)" + (t.notes.isEmpty ? "" : "\n      " + t.notes.replacingOccurrences(of: "\n", with: "\n      "))
 }
 
