@@ -40,6 +40,8 @@ struct RootView: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { app.windowWidth = $0 }
+        // Use the hidden title bar's strip: rows start just under the traffic lights.
+        .ignoresSafeArea(.container, edges: .top)
         .font(Theme.font)
         .background(Theme.bg)
         .overlay(alignment: .top) {
@@ -409,14 +411,8 @@ struct AgentPanel: View {
                 .onChange(of: focus.wrappedValue) { old, new in
                     if old == .title && new != .title { app.store.rename(todoID, title) }
                 }
-                Button { app.panelOpen = false; app.focusRequest = .list } label: {
-                    Text("×").font(.system(size: 15)).foregroundStyle(Theme.dim)
-                        .frame(width: 18, height: 18).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("close  (esc · \(app.keymap.label(.details)))")
             }
-            .padding(.leading, 16).padding(.trailing, 10).padding(.top, 30).padding(.bottom, 4)
+            .padding(.leading, 16).padding(.trailing, 16).padding(.top, 30).padding(.bottom, 4)
             if let t = todo { Stamps(todo: t).padding(.horizontal, 16).padding(.bottom, 8) }
             ZStack(alignment: .topLeading) {
                 if notes.isEmpty {
@@ -459,6 +455,15 @@ struct AgentPanel: View {
             } else {
                 Spacer()
             }
+        }
+        .overlay(alignment: .topTrailing) {
+            Button { app.panelOpen = false; app.focusRequest = .list } label: {
+                Text("×").font(.system(size: 15)).foregroundStyle(Theme.dim)
+                    .frame(width: 22, height: 22).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("close  (esc · \(app.keymap.label(.details)))")
+            .padding(.top, 3).padding(.trailing, 8)
         }
         .onAppear { load() }
         .onChange(of: todoID) { _, _ in load() }
@@ -666,13 +671,18 @@ struct Stamps: View {
     let todo: Todo
 
     var body: some View {
-        HStack(spacing: 6) {
-            Text("created \(fmt(todo.createdAt))")
-            if todo.done { Text("·"); Text("done \(fmt(todo.completedAt))") }
-            else if todo.updatedAt - todo.createdAt > 60_000 { Text("·"); Text("edited \(fmt(todo.updatedAt))") }
-        }
-        .font(Theme.small).foregroundStyle(Theme.faint)
+        Text(line)
+            .font(Theme.small).foregroundStyle(Theme.faint)
+            .frame(maxWidth: .infinity, alignment: .leading)
         .help("id \(todo.id)")
+    }
+
+    private var line: String {
+        var parts = ["created \(fmt(todo.createdAt))"]
+        if todo.done { parts.append("done \(fmt(todo.completedAt))") }
+        else if todo.updatedAt - todo.createdAt > 60_000 { parts.append("edited \(fmt(todo.updatedAt))") }
+        // Non-breaking spaces keep "3 hours ago" together; lines wrap only at the separators.
+        return parts.map { $0.replacingOccurrences(of: " ", with: "\u{00A0}") }.joined(separator: " · ")
     }
 
     private func fmt(_ ms: Int64) -> String {
