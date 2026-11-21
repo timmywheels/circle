@@ -10,7 +10,7 @@ enum Action: String, CaseIterable, Identifiable {
     case moveDown = "move_down", moveUp = "move_up"
     case indent, outdent, collapse, expand
     case toggle, edit, delete, undo
-    case addTop = "add_top", addBelow = "add_below"
+    case addTop = "add_top", addBelow = "add_below", newSection = "new_section"
     case run, cancel
     case details, notes, remind
     case shapeMine = "shape_mine", shapeAgent = "shape_agent", shapeWaiting = "shape_waiting", cycleShape = "cycle_shape"
@@ -39,6 +39,7 @@ enum Action: String, CaseIterable, Identifiable {
         case .undo: return "undo"
         case .addTop: return "add at top"
         case .addBelow: return "add below selection"
+        case .newSection: return "new section"
         case .run: return "hand to agent △"
         case .cancel: return "cancel agent run"
         case .details: return "open details (again: notes)"
@@ -66,7 +67,7 @@ enum Action: String, CaseIterable, Identifiable {
         .moveDown: ["shift+j", "alt+down"], .moveUp: ["shift+k", "alt+up"],
         .indent: ["tab"], .outdent: ["shift+tab"], .collapse: ["h", "left"], .expand: ["l", "right"],
         .toggle: ["space", "x"], .edit: ["e"], .delete: ["d", "backspace", "delete"], .undo: ["u", "cmd+z"],
-        .addTop: ["a", "n", "/"], .addBelow: ["o"],
+        .addTop: ["a", "n", "/"], .addBelow: ["o"], .newSection: ["shift+s"],
         .run: ["r", "2", "cmd+enter"], .cancel: ["c"],
         .details: ["enter", "p", "cmd+j"], .notes: ["shift+n"], .remind: ["m"],
         .shapeMine: ["1"], .shapeAgent: [], .shapeWaiting: ["3"], .cycleShape: ["t"],

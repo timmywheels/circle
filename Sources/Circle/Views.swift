@@ -22,21 +22,25 @@ struct RootView: View {
     var body: some View {
         let compact = app.compact
         let panelID = app.panelOpen ? app.store.selection : nil
-        HStack(spacing: 0) {
-            if !(compact && panelID != nil) {
-                VStack(spacing: 0) {
-                    InputLine(focus: $focus)
-                    Rectangle().fill(Theme.line).frame(height: 1)
-                    TodoList(focus: $focus)
-                    Rectangle().fill(Theme.line).frame(height: 1)
-                    StatusLine()
+        let listColumn = VStack(spacing: 0) {
+            InputLine(focus: $focus)
+            Rectangle().fill(Theme.line).frame(height: 1)
+            TodoList(focus: $focus)
+            Rectangle().fill(Theme.line).frame(height: 1)
+            StatusLine()
+        }
+        Group {
+            if compact {
+                if let id = panelID { AgentPanel(todoID: id, focus: $focus) } else { listColumn }
+            } else {
+                HStack(spacing: 0) {
+                    listColumn.frame(minWidth: 280, maxWidth: .infinity)
+                    if let id = panelID {
+                        SplitHandle()
+                        AgentPanel(todoID: id, focus: $focus)
+                            .frame(width: app.clampedPanelWidth)
+                    }
                 }
-                .frame(minWidth: compact ? 0 : 300)
-            }
-            if let id = panelID {
-                if !compact { Rectangle().fill(Theme.line).frame(width: 1) }
-                AgentPanel(todoID: id, focus: $focus)
-                    .frame(minWidth: compact ? 0 : 280, idealWidth: 400, maxWidth: compact ? .infinity : 520)
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { app.windowWidth = $0 }
@@ -61,6 +65,7 @@ struct RootView: View {
         // Opening or closing details in compact mode swaps which view holds the keys.
         .onChange(of: panelID) { _, _ in if compact { DispatchQueue.main.async { focus = .list } } }
         .onChange(of: app.focusRequest) { applyFocus() }
+        .onChange(of: focus) { _, f in app.currentFocus = f }
     }
 
     private func applyFocus() {
@@ -122,6 +127,8 @@ struct InputLine: View {
                     return .ignored
                 }
                 .onChange(of: linkQuery) { pick = 0 }
+                .onChange(of: app.inputPrefill) { _, v in if let v { draft = v; app.inputPrefill = nil } }
+                .onAppear { if let v = app.inputPrefill { draft = v; app.inputPrefill = nil } }
         }
         .padding(.leading, 16).padding(.trailing, 16)
         .padding(.top, 30).padding(.bottom, 12)   // clears the traffic lights
@@ -305,7 +312,7 @@ struct TodoRow: View {
         }
         .padding(.leading, 8).padding(.trailing, 16)
         .padding(.top, todo.isSection && level == 0 ? 14 : 5).padding(.bottom, 5)
-        .background(selected ? Theme.selection : .clear)
+        .background(selected ? (focus.wrappedValue == .list ? Color.accentColor.opacity(0.16) : Theme.selection) : .clear)
         .overlay(alignment: app.dropHint?.after == true ? .bottom : .top) {
             if let h = app.dropHint, h.id == todo.id {
                 Rectangle().fill(Color.accentColor).frame(height: 2)
@@ -316,8 +323,9 @@ struct TodoRow: View {
         .contextMenu { RowMenu(todo: todo) }
         .onTapGesture {
             app.store.selection = todo.id
-            if NSApp.currentEvent?.clickCount == 2 { app.panelOpen = true; focus.wrappedValue = .list }
-            else { focus.wrappedValue = .list }
+            focus.wrappedValue = .list
+            if todo.isSection { app.store.setCollapsed(todo.id, !app.store.collapsed.contains(todo.id)); return }
+            if NSApp.currentEvent?.clickCount == 2 { app.panelOpen = true }
         }
         .opacity(app.draggingID == todo.id ? 0.35 : 1)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(listSpace)) } action: { app.rowFrames[todo.id] = $0 }
@@ -361,9 +369,8 @@ struct StatusLine: View {
             }
             .buttonStyle(.plain)
             .lineLimit(1)
-            if !app.compact {
-                Text(abbreviate(reg.cwd)).lineLimit(1).truncationMode(.head)
-                Text(reg.autonomy.rawValue)
+            if app.settings.hints && app.windowWidth > 460 {
+                Text(hint).foregroundStyle(Theme.faint).lineLimit(1).truncationMode(.tail)
             }
             Spacer(minLength: 6)
             if let f = app.flash, !f.isEmpty { Text(f).foregroundStyle(Color.primary.opacity(0.7)).lineLimit(1) }
@@ -378,6 +385,19 @@ struct StatusLine: View {
         .foregroundStyle(Theme.dim)
         .padding(.horizontal, app.compact ? 12 : 16)
         .frame(height: 26)
+    }
+
+    /// The few keys that matter for where the keyboard is right now.
+    private var hint: String {
+        switch app.currentFocus {
+        case .input: return "↩ add · # section · !remind · @agent · ↓ list"
+        case .notes, .title, .remind, .edit: return "esc done"
+        case .palette: return "↑↓ pick · ↩ run · esc close"
+        default:
+            if app.panelOpen { return "← back · ↩ notes · ↑↓ next · m remind" }
+            if app.store.ordered.isEmpty { return "a add · ⇧⌘N section" }
+            return "↩ open · space done · tab nest · ⌘K"
+        }
     }
 
     private var syncColor: Color {
@@ -650,6 +670,8 @@ struct RowMenu: View {
             Divider()
             Button("Delete") { app.store.delete(todo.id) }
         }
+        Divider()
+        Button("New Section") { app.newSection() }
     }
 
     static let presets: [(String, String)] = [
@@ -909,7 +931,7 @@ struct DetailsFooter: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Rectangle().fill(Theme.line).frame(height: 1).padding(.horizontal, -16)
-            LinksBlock(todoID: todo.id).padding(.horizontal, -16).padding(.top, -6)
+            LinksSection(todo: todo)
             if !todo.isSection && (todo.remindAt > 0 || app.remindEditing) {
                 ReminderField(todo: todo, focus: focus)
             }
@@ -926,5 +948,55 @@ struct DetailsFooter: View {
         }
         .font(Theme.small)
         .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 10)
+    }
+}
+
+
+/// "▸ links (2)" — collapsed by default, remembers its state.
+struct LinksSection: View {
+    @Environment(AppModel.self) private var app
+    let todo: Todo
+    @AppStorage("linksOpen") private var open = false
+
+    var body: some View {
+        let outCount = Set((Links.names(in: todo.title) + Links.names(in: todo.notes)).map(Links.key)).count
+        let total = outCount + app.store.backlinks(todo.id).count
+        if total > 0 {
+            VStack(alignment: .leading, spacing: 4) {
+                Button { open.toggle() } label: {
+                    Text("\(open ? "▾" : "▸") links (\(total))").foregroundStyle(Theme.faint)
+                }
+                .buttonStyle(.plain)
+                if open { LinksBlock(todoID: todo.id).padding(.horizontal, -16).padding(.top, -6) }
+            }
+        }
+    }
+}
+
+
+/// The divider between list and details: drag to resize (width is remembered).
+struct SplitHandle: View {
+    @Environment(AppModel.self) private var app
+    @State private var start: CGFloat?
+
+    var body: some View {
+        Rectangle().fill(Theme.line).frame(width: 1)
+            .padding(.horizontal, 3)          // wider grab area than the visible line
+            .contentShape(Rectangle())
+            .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { v in
+                        let s0 = start ?? app.clampedPanelWidth
+                        if start == nil { start = s0 }
+                        app.panelWidth = s0 - v.translation.width
+                    }
+                    .onEnded { _ in
+                        start = nil
+                        app.panelWidth = app.clampedPanelWidth
+                        UserDefaults.standard.set(Double(app.panelWidth), forKey: "panelWidth")
+                    }
+            )
+            .padding(.horizontal, -3)
     }
 }

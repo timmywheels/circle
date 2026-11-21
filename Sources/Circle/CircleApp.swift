@@ -23,6 +23,7 @@ struct CircleApp: App {
             }
             CommandGroup(replacing: .newItem) {
                 Button("New Todo") { app.focusInput(top: true) }.keyboardShortcut("n")
+                Button("New Section") { app.newSection() }.keyboardShortcut("n", modifiers: [.command, .shift])
             }
             CommandMenu("Go") {
                 // Menu shortcuts work even while typing in a field; list keys live in keymap.json.
@@ -108,6 +109,15 @@ final class AppModel {
     var titleEditRequest = 0
     /// Shows the reminder field in details while one is being typed (m).
     var remindEditing = false
+    /// Where the keyboard is (for the status line hints).
+    var currentFocus: Field?
+    /// Text to drop into the input line (New Section puts "# ").
+    var inputPrefill: String?
+    /// Details panel width beside the list (saved when a drag ends).
+    var panelWidth: CGFloat = {
+        let w = UserDefaults.standard.double(forKey: "panelWidth"); return w > 0 ? w : 420
+    }()
+    var clampedPanelWidth: CGFloat { min(max(panelWidth, 260), max(260, windowWidth - 280)) }
     /// Current window width; below ~640pt the layout goes compact.
     var windowWidth: CGFloat = 800
     var settings: Settings { Settings.shared }
@@ -138,6 +148,15 @@ final class AppModel {
         }
         sync.start()
         registry.scan()
+    }
+
+    /// Starts a new top-level section: "# " in the input, ↩ adds it.
+    func newSection() {
+        panelOpen = false
+        insertAfter = nil
+        focusRequest = .input
+        // Fill after the field has focus, so the caret lands after "# " instead of selecting it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.inputPrefill = "# " }
     }
 
     func focusInput(top: Bool) {
@@ -201,7 +220,10 @@ final class AppModel {
                 say("couldn't read “\(spec)” as a time")
             }
         }
-        guard let t = store.add(title, kind: mention ? .agent : .mine, after: anchor) else { return nil }
+        let isSection = title.hasPrefix("# ")
+        guard let t = store.add(title, kind: mention ? .agent : .mine, after: isSection ? nil : anchor) else { return nil }
+        // New sections go to the bottom so they don't visually adopt the todos below them.
+        if isSection { store.moveToEnd(t.id) }
         if let w = when {
             store.setReminder(t.id, at: Int64(w.date.timeIntervalSince1970 * 1000), rule: w.rule)
             say("⏰ " + When.long(Int64(w.date.timeIntervalSince1970 * 1000), rule: w.rule))
@@ -264,6 +286,7 @@ final class AppModel {
             reveal(id)
         case .hideDone: s.hideDone.toggle(); say(s.hideDone ? "hiding completed" : "showing completed")
         case .logbook: s.logbook.toggle(); say(s.logbook ? "logbook · space restores · esc back" : "")
+        case .newSection: newSection()
         case .palette: paletteOpen.toggle()
         case .help: helpOpen.toggle()
         }
