@@ -11,6 +11,10 @@ enum Theme {
     static let faint = Color.primary.opacity(0.22)
     /// Sizes follow settings.json "font_size" live.
     static var font: Font { .system(size: Settings.shared.fontSize, design: .monospaced) }
+    /// Details title: one step up from body text so it reads as the heading.
+    static var title: Font { .system(size: Settings.shared.fontSize + 4, weight: .semibold, design: .monospaced) }
+    /// Notes body: readable, but quieter than the title.
+    static let body = Color.primary.opacity(0.72)
     static var small: Font { .system(size: max(9, Settings.shared.fontSize - 2.5), design: .monospaced) }
 }
 
@@ -430,7 +434,7 @@ struct AgentPanel: View {
             if editingTitle {
                 TextField("", text: $title, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .fontWeight(.semibold)
+                    .font(Theme.title)
                     .lineLimit(1...4)
                     .focused(focus, equals: .title)
                     .onSubmit { app.store.rename(todoID, title); editingTitle = false; app.focusRequest = .list }
@@ -442,7 +446,8 @@ struct AgentPanel: View {
             } else {
                 // Reads like the list: [[links]] are links. Click the text (or press e) to edit the raw title.
                 LinkedText(text: todo?.title ?? "", done: todo?.done ?? false)
-                    .fontWeight(.semibold)
+                    .font(Theme.title)
+                    .lineSpacing(2)
                     .lineLimit(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
@@ -451,14 +456,15 @@ struct AgentPanel: View {
                     .onTapGesture { title = todo?.title ?? ""; editingTitle = true }
             }
             }
-            .padding(.leading, 16).padding(.trailing, 16).padding(.top, 30).padding(.bottom, 8)
+            .padding(.leading, 16).padding(.trailing, 28).padding(.top, 30).padding(.bottom, 16)
             ZStack(alignment: .topLeading) {
                 if notes.isEmpty {
                     Text("notes").foregroundStyle(Theme.faint).padding(.leading, 5)
                 }
                 TextEditor(text: $notes)
                     .scrollContentBackground(.hidden)
-                    .lineSpacing(3)
+                    .foregroundStyle(Theme.body)
+                    .lineSpacing(4)
                     .focused(focus, equals: .notes)
                     .onExitCommand { app.focusRequest = .list }
             }
