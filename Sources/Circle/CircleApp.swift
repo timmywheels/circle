@@ -106,6 +106,8 @@ final class AppModel {
     var helpOpen = false
     /// Bumped to ask the details panel to edit its title (e while details are open).
     var titleEditRequest = 0
+    /// Shows the reminder field in details while one is being typed (m).
+    var remindEditing = false
     /// Current window width; below ~640pt the layout goes compact.
     var windowWidth: CGFloat = 800
     var settings: Settings { Settings.shared }
@@ -243,7 +245,7 @@ final class AppModel {
         case .details:
             guard sel != nil else { return }
             if panelOpen && editingID == nil { focusRequest = .notes } else { panelOpen = true }
-        case .remind: if sel != nil { panelOpen = true; focusRequest = .remind }
+        case .remind: if sel != nil { panelOpen = true; remindEditing = true; focusRequest = .remind }
         case .notes: if sel != nil { panelOpen = true; focusRequest = .notes }
         case .shapeMine: if let id = sel { s.setKind(id, .mine) }
         case .shapeWaiting: if let id = sel { s.setKind(id, .waiting) }

@@ -217,7 +217,11 @@ struct TodoList: View {
         return day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()).uppercased()
     }
 
-    private func handle(_ k: KeyPress) -> KeyPress.Result { app.handleKey(k) }
+    private func handle(_ k: KeyPress) -> KeyPress.Result {
+        // While a row is being renamed inline, keys belong to the text field.
+        guard focus.wrappedValue == .list else { return .ignored }
+        return app.handleKey(k)
+    }
 
 
 }
@@ -407,8 +411,8 @@ struct AgentPanel: View {
                     .fontWeight(.semibold)
                     .lineLimit(1...4)
                     .focused(focus, equals: .title)
-                    .onSubmit { app.store.rename(todoID, title); editingTitle = false; focus.wrappedValue = .list }
-                    .onExitCommand { title = todo?.title ?? ""; editingTitle = false; focus.wrappedValue = .list }
+                    .onSubmit { app.store.rename(todoID, title); editingTitle = false; app.focusRequest = .list }
+                    .onExitCommand { title = todo?.title ?? ""; editingTitle = false; app.focusRequest = .list }
                     .onChange(of: focus.wrappedValue) { old, new in
                         if old == .title && new != .title { app.store.rename(todoID, title); editingTitle = false }
                     }
@@ -420,12 +424,14 @@ struct AgentPanel: View {
                     .lineLimit(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
+                    .help(todo.map { Stamps.text(for: $0) } ?? "")
                     .onTapGesture { title = todo?.title ?? ""; editingTitle = true }
             }
             }
-            .padding(.leading, 16).padding(.trailing, 16).padding(.top, 30).padding(.bottom, 4)
-            if let t = todo { Stamps(todo: t).padding(.horizontal, 16).padding(.bottom, 4) }
-            if let t = todo, !t.isSection { ReminderField(todo: t, focus: focus).padding(.horizontal, 16).padding(.bottom, 6) }
+            .padding(.leading, 16).padding(.trailing, 16).padding(.top, 30).padding(.bottom, 8)
+            if let t = todo, !t.isSection, t.remindAt > 0 || app.remindEditing {
+                ReminderField(todo: t, focus: focus).padding(.horizontal, 16).padding(.bottom, 6)
+            }
             ZStack(alignment: .topLeading) {
                 if notes.isEmpty {
                     Text("notes").foregroundStyle(Theme.faint).padding(.leading, 5)
@@ -433,13 +439,13 @@ struct AgentPanel: View {
                 TextEditor(text: $notes)
                     .scrollContentBackground(.hidden)
                     .focused(focus, equals: .notes)
-                    .onExitCommand { focus.wrappedValue = .list }
+                    .onExitCommand { app.focusRequest = .list }
             }
             .font(Theme.small)
             .frame(height: 64)
             .padding(.horizontal, 11)
             LinksBlock(todoID: todoID)
-            if todo?.isSection != true {
+            if todo?.isSection != true, run != nil {
             Rectangle().fill(Theme.line).frame(height: 1).padding(.top, 6)
             HStack {
                 if let run {
@@ -693,6 +699,9 @@ struct Stamps: View {
         .help("id \(todo.id)")
     }
 
+    /// Plain text for tooltips: "created 7 hours ago · edited 2 hours ago".
+    static func text(for t: Todo) -> String { Stamps(todo: t).line.replacingOccurrences(of: "\u{00A0}", with: " ") }
+
     private var line: String {
         var parts = ["created \(fmt(todo.createdAt))"]
         if todo.done { parts.append("done \(fmt(todo.completedAt))") }
@@ -768,7 +777,8 @@ struct PanelKeys: ViewModifier {
                 .focusable()
                 .focused(focus, equals: .list)
                 .focusEffectDisabled()
-                .onKeyPress(phases: [.down, .repeat]) { app.handleKey($0) }
+                // Keys typed into the notes / title / reminder fields are text, not shortcuts.
+                .onKeyPress(phases: [.down, .repeat]) { focus.wrappedValue == .list ? app.handleKey($0) : .ignored }
         } else {
             content
         }
@@ -783,16 +793,18 @@ struct ReminderField: View {
     @State private var text = ""
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text("remind").foregroundStyle(Theme.faint).frame(width: 52, alignment: .leading)
+        HStack(spacing: 6) {
+            Text("⏰").foregroundStyle(Theme.faint)
             TextField("", text: $text, prompt: Text(todo.remindAt > 0 ? When.long(todo.remindAt, rule: todo.repeatRule)
-                                                                      : "none · tomorrow 9am, every weekday, 30m")
+                                                                      : "when? tomorrow 9am, every weekday, 30m")
                 .foregroundColor(todo.remindAt > 0 ? Theme.dim : Theme.faint))
                 .textFieldStyle(.plain)
                 .lineLimit(1)
                 .focused(focus, equals: .remind)
                 .onSubmit(apply)
-                .onExitCommand { text = ""; focus.wrappedValue = .list }
+                .onExitCommand { text = ""; app.remindEditing = false; app.focusRequest = .list }
+                .onAppear { if app.remindEditing { DispatchQueue.main.async { focus.wrappedValue = .remind } } }
+                .onChange(of: focus.wrappedValue) { old, new in if old == .remind && new != .remind { app.remindEditing = false } }
             if todo.remindAt > 0 {
                 Button { app.store.setReminder(todo.id, at: 0, rule: "") } label: { Text("×").foregroundStyle(Theme.faint) }
                     .buttonStyle(.plain).help("clear reminder")
@@ -805,7 +817,7 @@ struct ReminderField: View {
     private func apply() {
         let spec = text.trimmingCharacters(in: .whitespaces)
         defer { text = "" }
-        if spec.isEmpty { focus.wrappedValue = .list; return }
+        if spec.isEmpty { app.remindEditing = false; app.focusRequest = .list; return }
         if spec == "none" || spec == "clear" {
             app.store.setReminder(todo.id, at: 0, rule: "")
         } else if let p = When.parse(spec, defaultHour: app.settings.reminderHour) {
@@ -816,6 +828,7 @@ struct ReminderField: View {
             app.say("couldn't read “\(spec)” as a time")
             return
         }
-        focus.wrappedValue = .list
+        app.remindEditing = false
+        app.focusRequest = .list
     }
 }
