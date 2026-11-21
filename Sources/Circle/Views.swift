@@ -465,6 +465,7 @@ struct AgentPanel: View {
                     .scrollContentBackground(.hidden)
                     .foregroundStyle(Theme.body)
                     .lineSpacing(4)
+                    .background(MarkdownHook { app.openLink(named: $0) })
                     .focused(focus, equals: .notes)
                     .onExitCommand { app.focusRequest = .list }
             }
