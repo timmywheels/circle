@@ -112,6 +112,7 @@ struct Palette: View {
         })
         items.append(PaletteItem(id: "rescan", title: "rescan agents") { reg.scan(); app.say("scanning PATH") })
         items.append(PaletteItem(id: "sync", title: "reconnect sync", detail: store.syncState.label) { app.sync.reload() })
+        items.append(PaletteItem(id: "settings", title: "open settings", detail: "settings.json  ⌘,") { Settings.shared.open() })
         items.append(PaletteItem(id: "keymap", title: "edit keymap", detail: "keymap.json") { app.keymap.openFile() })
         items.append(PaletteItem(id: "keymap-reload", title: "reload keymap") { app.reloadKeymap() })
         // Every keyboard command, with its current shortcut.

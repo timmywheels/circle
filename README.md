@@ -30,6 +30,24 @@ Hand a todo to an agent three ways: end it with `@claude` / `@codex` as you type
 
 Type `# Work` to add a section header, then nest todos under it with `tab` or by dragging. Anything completed before today leaves the list on its own; `L` opens the logbook, grouped by day, where `space` restores an item.
 
+## Settings
+
+`~/Library/Application Support/Circle/settings.json` (⌘, opens it). It reloads as soon as you save, and choices made in the app (agent, model, folder) are written back. `//` comments are allowed.
+
+| key | values |
+|---|---|
+| `font_size` | number, default 13.5 |
+| `agent`, `model` | e.g. `"claude"`, `"sonnet"` |
+| `autonomy` | `ask`, `edits`, `yolo` |
+| `working_directory` | folder agents run in, `~` allowed |
+| `hide_completed` | true / false |
+| `logbook` | `next_day` (completed items leave the list after today) or `never` |
+| `panel` | `auto` (side by side when wide, full window when narrow), `side`, `overlay` |
+| `hints` | inline tips such as `r → claude` |
+| `custom_models` | `{ "codex": ["my-model"] }` |
+
+Keys live in `keymap.json` next to it (⌘K → edit keymap), including `"global"` for the summon chord.
+
 ## Keys
 
 | key | action |

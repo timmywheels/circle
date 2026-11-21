@@ -13,9 +13,11 @@ final class Store {
     /// (done, total) direct children per parent, for the progress badge.
     private(set) var progress: [String: (done: Int, total: Int)] = [:]
     var selection: String?
-    var hideDone = UserDefaults.standard.bool(forKey: "hideDone") {
-        didSet { UserDefaults.standard.set(hideDone, forKey: "hideDone"); rebuild() }
+    var hideDone = Settings.shared.hideCompleted {
+        didSet { if Settings.shared.hideCompleted != hideDone { Settings.shared.hideCompleted = hideDone }; rebuild() }
     }
+    /// settings.json "logbook": "never" keeps completed items in the list.
+    var autoArchive = Settings.shared.logbook != "never" { didSet { rebuild() } }
     var syncState: SyncState = .local
     /// Show only one shape (⌥1 ⌥2 ⌥3). nil shows everything. Filtered views are flat.
     var filter: Kind? { didSet { rebuild() } }
@@ -84,7 +86,7 @@ final class Store {
         func archived(_ t: Todo) -> Bool {
             if let m = memo[t.id] { return m }
             memo[t.id] = false // cycle guard
-            let r = t.done && !t.isSection && t.completedAt < dayStart && (k[t.id] ?? []).allSatisfy { archived($0) }
+            let r = autoArchive && t.done && !t.isSection && t.completedAt < dayStart && (k[t.id] ?? []).allSatisfy { archived($0) }
             memo[t.id] = r
             return r
         }
@@ -92,7 +94,7 @@ final class Store {
         var rows: [Todo] = []
         var d: [String: Int] = [:]
         if logbook {
-            rows = live.filter { archived($0) }.sorted { $0.completedAt > $1.completedAt }
+            rows = live.filter { $0.done && !$0.isSection && $0.completedAt < dayStart }.sorted { $0.completedAt > $1.completedAt }
         } else if let f = filter {
             rows = live.filter { $0.kind == f && !$0.isSection && !archived($0) && !(hideDone && $0.done) }.sorted(by: Self.order)
         } else {

@@ -2,14 +2,16 @@ import SwiftUI
 import AppKit
 import CircleCore
 
+@MainActor
 enum Theme {
     static let bg = Color(nsColor: .textBackgroundColor)
     static let line = Color.primary.opacity(0.06)
     static let selection = Color.primary.opacity(0.075)
     static let dim = Color.primary.opacity(0.38)
     static let faint = Color.primary.opacity(0.22)
-    static let font = Font.system(size: 13.5, design: .monospaced)
-    static let small = Font.system(size: 11, design: .monospaced)
+    /// Sizes follow settings.json "font_size" live.
+    static var font: Font { .system(size: Settings.shared.fontSize, design: .monospaced) }
+    static var small: Font { .system(size: max(9, Settings.shared.fontSize - 2.5), design: .monospaced) }
 }
 
 struct RootView: View {
@@ -18,21 +20,26 @@ struct RootView: View {
     @FocusState private var focus: Field?
 
     var body: some View {
+        let compact = app.compact
+        let panelID = app.panelOpen ? app.store.selection : nil
         HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                InputLine(focus: $focus)
-                Rectangle().fill(Theme.line).frame(height: 1)
-                TodoList(focus: $focus)
-                Rectangle().fill(Theme.line).frame(height: 1)
-                StatusLine()
+            if !(compact && panelID != nil) {
+                VStack(spacing: 0) {
+                    InputLine(focus: $focus)
+                    Rectangle().fill(Theme.line).frame(height: 1)
+                    TodoList(focus: $focus)
+                    Rectangle().fill(Theme.line).frame(height: 1)
+                    StatusLine()
+                }
+                .frame(minWidth: compact ? 0 : 300)
             }
-            .frame(minWidth: 340)
-            if app.panelOpen, let id = app.store.selection {
-                Rectangle().fill(Theme.line).frame(width: 1)
+            if let id = panelID {
+                if !compact { Rectangle().fill(Theme.line).frame(width: 1) }
                 AgentPanel(todoID: id, focus: $focus)
-                    .frame(minWidth: 300, idealWidth: 400)
+                    .frame(minWidth: compact ? 0 : 280, idealWidth: 400, maxWidth: compact ? .infinity : 520)
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { app.windowWidth = $0 }
         .font(Theme.font)
         .background(Theme.bg)
         .overlay(alignment: .top) {
@@ -136,6 +143,7 @@ struct InputLine: View {
 
     private var placeholder: String {
         if let a = app.insertAfter, let t = app.store.todo(a) { return "add below “\(t.title.prefix(30))”" }
+        guard app.settings.hints && !app.compact else { return "add a todo" }
         return "add a todo   ·   end with @\(app.registry.current?.id ?? "claude") to hand it off"
     }
 
@@ -286,7 +294,7 @@ struct TodoRow: View {
                     .font(Theme.small).foregroundStyle(Theme.faint)
             }
             if let run { RunBadge(run: run) }
-            else if selected && !todo.done && !todo.isSection && app.editingID != todo.id, let a = app.registry.current {
+            else if selected && app.settings.hints && !app.compact && !todo.done && !todo.isSection && app.editingID != todo.id, let a = app.registry.current {
                 Text("r → \(a.id)").font(Theme.small).foregroundStyle(Theme.faint)
             }
         }
@@ -347,20 +355,23 @@ struct StatusLine: View {
                 else { Text(reg.scanned ? "no agents" : "scanning…") }
             }
             .buttonStyle(.plain)
-            Text(abbreviate(reg.cwd)).lineLimit(1).truncationMode(.head)
-            Text(reg.autonomy.rawValue)
-            Spacer()
-            if let f = app.flash, !f.isEmpty { Text(f).foregroundStyle(Color.primary.opacity(0.7)) }
+            .lineLimit(1)
+            if !app.compact {
+                Text(abbreviate(reg.cwd)).lineLimit(1).truncationMode(.head)
+                Text(reg.autonomy.rawValue)
+            }
+            Spacer(minLength: 6)
+            if let f = app.flash, !f.isEmpty { Text(f).foregroundStyle(Color.primary.opacity(0.7)).lineLimit(1) }
             if app.store.logbook { Text("logbook").foregroundStyle(Color.primary) }
             ShapeCounts()
             HStack(spacing: 5) {
                 Circle().fill(syncColor).frame(width: 6, height: 6)
-                Text(app.store.syncState.label)
+                if !app.compact { Text(app.store.syncState.label) }
             }
         }
         .font(Theme.small)
         .foregroundStyle(Theme.dim)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, app.compact ? 12 : 16)
         .frame(height: 26)
     }
 
@@ -485,11 +496,15 @@ struct HelpOverlay: View {
         } + extras + [(Chord(km.globalHotkey)?.label ?? km.globalHotkey, "summon Circle from anywhere")]
         let half = (rows.count + 1) / 2
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 28) {
-                column(Array(rows[..<half]))
-                column(Array(rows[half...]))
+            if app.compact {
+                ScrollView { column(rows) }.frame(maxHeight: 460)
+            } else {
+                HStack(alignment: .top, spacing: 28) {
+                    column(Array(rows[..<half]))
+                    column(Array(rows[half...]))
+                }
             }
-            Text("edit in keymap.json  ·  ⌘K → edit keymap").foregroundStyle(Theme.faint)
+            Text("keymap.json · settings.json (⌘,)").foregroundStyle(Theme.faint)
         }
         .font(Theme.small)
         .padding(20)

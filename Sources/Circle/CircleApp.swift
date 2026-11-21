@@ -12,11 +12,15 @@ struct CircleApp: App {
         Window("Circle", id: "main") {
             RootView()
                 .environment(app)
-                .frame(minWidth: 380, minHeight: 260)
+                .frame(minWidth: 300, minHeight: 220)
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 640, height: 640)
         .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") { Settings.shared.open() }.keyboardShortcut(",")
+                Button("Keymap…") { app.keymap.openFile() }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New Todo") { app.focusInput(top: true) }.keyboardShortcut("n")
             }
@@ -99,6 +103,13 @@ final class AppModel {
     var paletteOpen = false { didSet { if !paletteOpen { focusRequest = .list } } }
     var panelOpen = false
     var helpOpen = false
+    /// Current window width; below ~640pt the layout goes compact.
+    var windowWidth: CGFloat = 800
+    var settings: Settings { Settings.shared }
+    /// One column: the details panel replaces the list instead of sitting beside it.
+    var compact: Bool {
+        settings.panel == "overlay" || (settings.panel == "auto" && windowWidth < 640)
+    }
     /// In-app drag state for the list.
     static let endDropID = "__end__"
     var dropHint: DropHint?
@@ -110,6 +121,12 @@ final class AppModel {
     @ObservationIgnored private var flashWork: DispatchWorkItem?
 
     func boot() {
+        settings.onReload = { [weak self] in
+            guard let self else { return }
+            if store.hideDone != settings.hideCompleted { store.hideDone = settings.hideCompleted }
+            store.autoArchive = settings.logbook != "never"
+            say(settings.error ?? "settings reloaded")
+        }
         sync.start()
         registry.scan()
     }

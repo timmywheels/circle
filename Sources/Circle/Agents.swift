@@ -88,21 +88,31 @@ final class AgentRegistry {
     private(set) var shellPATH: String = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
     private(set) var scanned = false
 
-    var agentID: String = UserDefaults.standard.string(forKey: "agent") ?? "claude" {
-        didSet { UserDefaults.standard.set(agentID, forKey: "agent") }
+    // Choices live in settings.json (Settings.shared); these are views onto it.
+    private var settings: Settings { Settings.shared }
+    var agentID: String {
+        get { settings.agent }
+        set { settings.agent = newValue }
     }
-    var model: String = UserDefaults.standard.string(forKey: "model") ?? "sonnet" {
-        didSet { UserDefaults.standard.set(model, forKey: "model") }
+    var model: String {
+        get { settings.model }
+        set { settings.model = newValue }
     }
-    var autonomy: Autonomy = Autonomy(rawValue: UserDefaults.standard.string(forKey: "autonomy") ?? "") ?? .edits {
-        didSet { UserDefaults.standard.set(autonomy.rawValue, forKey: "autonomy") }
+    var autonomy: Autonomy {
+        get { Autonomy(rawValue: settings.autonomy) ?? .edits }
+        set { settings.autonomy = newValue.rawValue }
     }
-    var cwd: String = UserDefaults.standard.string(forKey: "cwd") ?? FileManager.default.homeDirectoryForCurrentUser.path {
-        didSet { UserDefaults.standard.set(cwd, forKey: "cwd") }
+    /// Absolute path of the working folder.
+    var cwd: String {
+        get { settings.workingDirectoryPath }
+        set {
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
+            settings.workingDirectory = newValue.hasPrefix(home) ? "~" + newValue.dropFirst(home.count) : newValue
+        }
     }
-    /// Models the user typed in, remembered per agent.
-    var customModels: [String: [String]] = (UserDefaults.standard.dictionary(forKey: "customModels") as? [String: [String]]) ?? [:] {
-        didSet { UserDefaults.standard.set(customModels, forKey: "customModels") }
+    var customModels: [String: [String]] {
+        get { settings.customModels }
+        set { settings.customModels = newValue }
     }
 
     var current: AgentDef? { available.first { $0.id == agentID } ?? available.first }
