@@ -10,6 +10,10 @@ final class Settings {
     static let shared = Settings()
 
     var fontSize: Double = 13.5 { didSet { changed() } }
+    /// Any installed font family or PostScript name; empty = SF Mono.
+    var fontFamily: String = "" { didSet { changed() } }
+    /// ultralight, thin, light, regular, medium, semibold, bold, heavy.
+    var fontWeight: String = "regular" { didSet { changed() } }
     var agent: String = "claude" { didSet { changed() } }
     var model: String = "sonnet" { didSet { changed() } }
     var autonomy: String = "edits" { didSet { changed() } }
@@ -64,6 +68,9 @@ final class Settings {
         loading = true
         defer { loading = false }
         if let v = obj["font_size"] as? Double { fontSize = min(max(v, 9), 28) }
+        if let v = obj["font_family"] as? String { fontFamily = v }
+        if let v = obj["font_weight"] as? String { fontWeight = Fonts.weights.contains(v.lowercased()) ? v.lowercased() : "regular" }
+        if !Fonts.exists(fontFamily) { error = "font \"\(fontFamily)\" is not installed, using SF Mono" }
         if let v = obj["agent"] as? String { agent = v }
         if let v = obj["model"] as? String { model = v }
         if let v = obj["autonomy"] as? String, Autonomy(rawValue: v) != nil { autonomy = v }
@@ -81,6 +88,8 @@ final class Settings {
     private var json: [String: Any] {
         [
             "font_size": fontSize,
+            "font_family": fontFamily,
+            "font_weight": fontWeight,
             "agent": agent,
             "model": model,
             "autonomy": autonomy,
@@ -98,6 +107,7 @@ final class Settings {
 
     private func changed() {
         guard !loading else { return }
+        NotificationCenter.default.post(name: .circleSettingsChanged, object: nil)
         // Coalesce bursts (e.g. agent + model chosen together) into one write.
         saveWork?.cancel()
         let w = DispatchWorkItem { [weak self] in self?.writeNow() }
@@ -164,6 +174,7 @@ final class Settings {
     private func reloadFromDisk() {
         guard let d = try? Data(contentsOf: Self.file), d != lastWritten else { return }
         load()
+        NotificationCenter.default.post(name: .circleSettingsChanged, object: nil)
         onReload?()
     }
 

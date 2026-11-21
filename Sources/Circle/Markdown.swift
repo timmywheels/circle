@@ -20,6 +20,16 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
 
     private final class WeakView { weak var tv: NSTextView?; init(_ tv: NSTextView) { self.tv = tv } }
 
+    override init() {
+        super.init()
+        NotificationCenter.default.addObserver(forName: .circleSettingsChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                for w in self.views.values { if let ts = w.tv?.textStorage { self.restyle(ts) } }
+            }
+        }
+    }
+
     func attach(_ tv: NSTextView) {
         guard let ts = tv.textStorage else { return }
         let key = ObjectIdentifier(tv)
@@ -73,8 +83,9 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
         let s = ts.string as NSString
         let full = NSRange(location: 0, length: s.length)
         let size = CGFloat(Settings.shared.fontSize)
-        let base = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
-        let cw = ("0" as NSString).size(withAttributes: [.font: base]).width
+        let base = Fonts.ns(size: size)
+        // Hanging indents measure the actual marker text, so proportional fonts line up too.
+        func width(_ str: String) -> CGFloat { (str as NSString).size(withAttributes: [.font: base]).width }
         ts.setAttributes([.font: base, .foregroundColor: body, .paragraphStyle: para(0)], range: full)
         guard full.length > 0 else { return }
 
@@ -93,14 +104,14 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
             let lr = NSRange(location: 0, length: (line as NSString).length)
             if let m = Self.heading.firstMatch(in: line, range: lr) {
                 let level = m.range(at: 1).length
-                let f = NSFont.monospacedSystemFont(ofSize: size + CGFloat(max(0, 4 - level)), weight: .bold)
+                let f = Fonts.bolder(size: size + CGFloat(max(0, 4 - level)))
                 ts.addAttributes([.font: f, .foregroundColor: self.label], range: r)
                 ts.addAttribute(.foregroundColor, value: self.faint, range: NSRange(location: r.location, length: m.range.length))
                 let p = self.para(0); p.paragraphSpacingBefore = level <= 2 ? 6 : 3
                 ts.addAttribute(.paragraphStyle, value: p, range: r)
             } else if let m = Self.list.firstMatch(in: line, range: lr) {
                 // Wrapped lines hang under the item's text, not under the marker.
-                ts.addAttribute(.paragraphStyle, value: self.para(CGFloat(m.range.length) * cw), range: r)
+                ts.addAttribute(.paragraphStyle, value: self.para(width((line as NSString).substring(with: m.range))), range: r)
                 let marker = m.range(at: 2)
                 ts.addAttribute(.foregroundColor, value: self.dim, range: NSRange(location: r.location + marker.location, length: marker.length))
                 let box = m.range(at: 3)
@@ -113,7 +124,7 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
                     }
                 }
             } else if let m = Self.quote.firstMatch(in: line, range: lr) {
-                ts.addAttributes([.foregroundColor: self.dim, .paragraphStyle: self.para(2 * cw)], range: r)
+                ts.addAttributes([.foregroundColor: self.dim, .paragraphStyle: self.para(width("> "))], range: r)
                 ts.addAttribute(.foregroundColor, value: self.faint, range: NSRange(location: r.location, length: m.range.length))
             }
             self.inline(ts, line: line, at: r.location)
@@ -159,7 +170,7 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
         ts.enumerateAttribute(.font, in: r) { v, sub, _ in
             guard let f = v as? NSFont else { return }
             var nf: NSFont
-            if bold { nf = NSFont.monospacedSystemFont(ofSize: f.pointSize, weight: .bold) }
+            if bold { nf = Fonts.bolder(size: f.pointSize) }
             else {
                 let d = f.fontDescriptor.withSymbolicTraits(f.fontDescriptor.symbolicTraits.union(.italic))
                 nf = NSFont(descriptor: d, size: f.pointSize) ?? f

@@ -10,12 +10,12 @@ enum Theme {
     static let dim = Color.primary.opacity(0.38)
     static let faint = Color.primary.opacity(0.22)
     /// Sizes follow settings.json "font_size" live.
-    static var font: Font { .system(size: Settings.shared.fontSize, design: .monospaced) }
+    static var font: Font { Fonts.swiftUI(size: Settings.shared.fontSize) }
     /// Details title: one step up from body text so it reads as the heading.
-    static var title: Font { .system(size: Settings.shared.fontSize + 4, weight: .semibold, design: .monospaced) }
+    static var title: Font { Font(Fonts.bolder(size: Settings.shared.fontSize + 4) as CTFont) }
     /// Notes body: readable, but quieter than the title.
     static let body = Color.primary.opacity(0.72)
-    static var small: Font { .system(size: max(9, Settings.shared.fontSize - 2.5), design: .monospaced) }
+    static var small: Font { Fonts.swiftUI(size: max(9, Settings.shared.fontSize - 2.5)) }
 }
 
 struct RootView: View {
