@@ -27,7 +27,7 @@ struct CircleApp: App {
             CommandMenu("Go") {
                 // Menu shortcuts work even while typing in a field; list keys live in keymap.json.
                 Button("Command Palette") { app.paletteOpen.toggle() }.keyboardShortcut("k")
-                Button("Details Panel") { app.perform(.details) }.keyboardShortcut("j")
+                Button("Details Panel") { app.panelOpen.toggle(); if !app.panelOpen { app.focusRequest = .list } }.keyboardShortcut("j")
                 Button("Hand to Agent") { app.runSelected() }.keyboardShortcut(.return, modifiers: .command)
                 Button("Back") { app.perform(.back) }.keyboardShortcut("[")
                 Divider()
@@ -69,7 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-enum Field: Hashable { case input, list, edit, palette, notes, title }
+enum Field: Hashable { case input, list, edit, palette, notes, title, remind }
 
 struct DropHint: Equatable {
     let id: String
@@ -86,6 +86,7 @@ final class AppModel {
     let runner: AgentRunner
     let keymap = Keymap()
     @ObservationIgnored let sync: SyncClient
+    @ObservationIgnored var reminders: Reminders?
     /// Where `back` (⌘[) returns to after following links.
     @ObservationIgnored var history: [String] = []
 
@@ -103,6 +104,8 @@ final class AppModel {
     var paletteOpen = false { didSet { if !paletteOpen { focusRequest = .list } } }
     var panelOpen = false
     var helpOpen = false
+    /// Bumped to ask the details panel to edit its title (e while details are open).
+    var titleEditRequest = 0
     /// Current window width; below ~640pt the layout goes compact.
     var windowWidth: CGFloat = 800
     var settings: Settings { Settings.shared }
@@ -121,6 +124,10 @@ final class AppModel {
     @ObservationIgnored private var flashWork: DispatchWorkItem?
 
     func boot() {
+        let r = Reminders(app: self)
+        reminders = r
+        store.onRebuilt = { [weak r] todos in r?.sync(todos) }
+        r.sync(store.allLive)
         settings.onReload = { [weak self] in
             guard let self else { return }
             if store.hideDone != settings.hideCompleted { store.hideDone = settings.hideCompleted }
@@ -180,8 +187,23 @@ final class AppModel {
             else if let a = registry.available.first(where: { $0.id == name }) { mention = true; agent = a }
             if mention { words.removeLast() }
         }
-        let title = words.joined(separator: " ")
+        var title = words.joined(separator: " ")
+        // "call dentist !fri 2pm" / "pay rent !1st every month"
+        var when: When.Parsed?
+        if let bang = title.range(of: " !", options: .backwards) ?? (title.hasPrefix("!") ? title.range(of: "!") : nil) {
+            let spec = String(title[bang.upperBound...])
+            if let p = When.parse(spec, defaultHour: settings.reminderHour) {
+                when = p
+                title = String(title[..<bang.lowerBound]).trimmingCharacters(in: .whitespaces)
+            } else {
+                say("couldn't read “\(spec)” as a time")
+            }
+        }
         guard let t = store.add(title, kind: mention ? .agent : .mine, after: anchor) else { return nil }
+        if let w = when {
+            store.setReminder(t.id, at: Int64(w.date.timeIntervalSince1970 * 1000), rule: w.rule)
+            say("⏰ " + When.long(Int64(w.date.timeIntervalSince1970 * 1000), rule: w.rule))
+        }
         if let a = agent {
             if a.id != registry.agentID { registry.choose(a, model: registry.models(for: a).first ?? "default") }
             handToAgent(t.id)
@@ -197,7 +219,9 @@ final class AppModel {
         let sel = s.selection
         switch a {
         case .down: s.select(1)
-        case .up: s.select(-1)
+        case .up:
+            // From the first row, ↑ goes back up to the input.
+            if s.selectedIndex == 0 && !panelOpen { s.selection = nil; focusRequest = .input } else { s.select(-1) }
         case .top: s.selection = s.ordered.first?.id
         case .bottom: s.selection = s.ordered.last?.id
         case .moveDown: if let id = sel { s.move(id, 1) }
@@ -207,14 +231,19 @@ final class AppModel {
         case .collapse: s.left()
         case .expand: s.right()
         case .toggle: if let id = sel { s.toggle(id) }
-        case .edit: if sel != nil { editingID = sel; focusRequest = .edit }
+        case .edit:
+            guard sel != nil else { return }
+            if panelOpen { titleEditRequest += 1 } else { editingID = sel; focusRequest = .edit }
         case .delete: if let id = sel { s.delete(id) }
         case .undo: s.undo()
         case .addTop: focusInput(top: true)
         case .addBelow: focusInput(top: false)
         case .run, .shapeAgent: runSelected()
         case .cancel: if let id = sel { runner.cancel(id) }
-        case .details: panelOpen.toggle(); if !panelOpen { focusRequest = .list }
+        case .details:
+            guard sel != nil else { return }
+            if panelOpen && editingID == nil { focusRequest = .notes } else { panelOpen = true }
+        case .remind: if sel != nil { panelOpen = true; focusRequest = .remind }
         case .notes: if sel != nil { panelOpen = true; focusRequest = .notes }
         case .shapeMine: if let id = sel { s.setKind(id, .mine) }
         case .shapeWaiting: if let id = sel { s.setKind(id, .waiting) }
@@ -236,6 +265,31 @@ final class AppModel {
         case .palette: paletteOpen.toggle()
         case .help: helpOpen.toggle()
         }
+    }
+
+    /// Keyboard entry point for the list (and the details panel in compact mode).
+    func handleKey(_ k: KeyPress) -> KeyPress.Result {
+        let s = store
+        if k.key == .escape {
+            if helpOpen { helpOpen = false }
+            else if panelOpen { panelOpen = false; focusRequest = .list }
+            else if s.logbook { s.logbook = false }
+            else if s.filter != nil { s.filter = nil }
+            else { s.selection = nil }
+            return .handled
+        }
+        // While details are open, ← (and h) means back, before it means collapse.
+        // Arrow keys arrive with .numericPad/.function set; only real modifiers count.
+        let held = k.modifiers.contains(.command) || k.modifiers.contains(.option)
+            || k.modifiers.contains(.control) || k.modifiers.contains(.shift)
+        let isLeft = k.key == .leftArrow || k.characters == "h" || k.characters == "\u{F702}"
+        if panelOpen && !held && isLeft {
+            panelOpen = false; focusRequest = .list
+            return .handled
+        }
+        guard let a = keymap.action(for: k) else { return .ignored }
+        perform(a)
+        return .handled
     }
 
     /// Opens the todo a [[link]] points at, creating it if it doesn't exist yet.

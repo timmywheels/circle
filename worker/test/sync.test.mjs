@@ -29,7 +29,7 @@ function client(name) {
 }
 
 const row = (id, title, updated_at, origin, extra = {}) => ({
-  id, kind: "todo", parent: "", done_at: 0, title, notes: "", done: false, sort: 0, created_at: updated_at, updated_at, deleted: false, origin, ...extra,
+  id, kind: "todo", parent: "", done_at: 0, remind_at: 0, repeat: "", title, notes: "", done: false, sort: 0, created_at: updated_at, updated_at, deleted: false, origin, ...extra,
 });
 
 const uid = Date.now().toString(16);
@@ -77,6 +77,12 @@ A.send({ t: "push", rows: [row(`${uid}-d1`, "finished", 1300, "devA", { done: tr
 const fin = await A.next((m) => m.cursor === null);
 assert.equal(fin.rows[0].done_at, 1299);
 console.log("✓ done_at");
+
+A.send({ t: "push", rows: [row(`${uid}-r1`, "pay rent", 1400, "devA", { remind_at: 99999, repeat: "month:1" })] });
+const rem = await A.next((m) => m.cursor === null);
+assert.equal(rem.rows[0].remind_at, 99999);
+assert.equal(rem.rows[0].repeat, "month:1");
+console.log("✓ reminders");
 
 // 3. LWW: older write loses, server echoes the newer canonical row
 B.send({ t: "push", rows: [row(`${uid}-1`, "buy oat milk", 2000, "devB")] });

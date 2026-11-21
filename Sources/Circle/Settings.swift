@@ -22,6 +22,11 @@ final class Settings {
     /// Inline hints such as "r → claude" and the input's @agent tip.
     var hints = true { didSet { changed() } }
     var customModels: [String: [String]] = [:] { didSet { changed() } }
+    /// Reminders: nag again every N minutes until done or snoozed (0 = never), up to `renotifyCount` times.
+    var renotifyMinutes = 30 { didSet { changed() } }
+    var renotifyCount = 4 { didSet { changed() } }
+    /// Hour used when a reminder names a day but no time ("tomorrow", "fri").
+    var reminderHour = 9 { didSet { changed() } }
 
     var error: String?
     @ObservationIgnored var onReload: (() -> Void)?
@@ -68,6 +73,9 @@ final class Settings {
         if let v = obj["panel"] as? String, ["auto", "side", "overlay"].contains(v) { panel = v }
         if let v = obj["hints"] as? Bool { hints = v }
         if let v = obj["custom_models"] as? [String: [String]] { customModels = v }
+        if let v = obj["renotify_minutes"] as? Int { renotifyMinutes = max(0, v) }
+        if let v = obj["renotify_count"] as? Int { renotifyCount = min(max(0, v), 12) }
+        if let v = obj["reminder_hour"] as? Int, (0...23).contains(v) { reminderHour = v }
     }
 
     private var json: [String: Any] {
@@ -82,6 +90,9 @@ final class Settings {
             "panel": panel,
             "hints": hints,
             "custom_models": customModels,
+            "renotify_minutes": renotifyMinutes,
+            "renotify_count": renotifyCount,
+            "reminder_hour": reminderHour,
         ]
     }
 

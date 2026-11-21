@@ -40,7 +40,12 @@ final class Store {
     @ObservationIgnored private var lastVersion: Int64 = 0
     @ObservationIgnored private var pollTimer: Timer?
     @ObservationIgnored private var undoStack: [[Todo]] = []
+    /// Repeating todo -> the next occurrence created when it was checked off (this session).
+    @ObservationIgnored private var successor: [String: String] = [:]
+    @ObservationIgnored private var undoneRepeat: Set<String> = []
     @ObservationIgnored var onLocalChange: (() -> Void)?
+    /// Called after every rebuild with all live todos (reminder scheduling).
+    @ObservationIgnored var onRebuilt: (([Todo]) -> Void)?
     @ObservationIgnored let device: String
 
     init() {
@@ -115,6 +120,7 @@ final class Store {
         }
         ordered = rows
         depth = d
+        onRebuilt?(live)
         if let s = selection, !rows.contains(where: { $0.id == s }) { selection = nil }
     }
 
@@ -189,7 +195,23 @@ final class Store {
         guard var t = byID[id] else { return }
         if t.isSection { setCollapsed(id, !collapsed.contains(id)); return }
         t.setDone(!t.done)
-        commit([t.touched(by: device)])
+        var changes = [t.touched(by: device)]
+        // Repeating: this one goes to history, the next occurrence takes its place.
+        if t.done && !t.repeatRule.isEmpty && !undoneRepeat.contains(id) {
+            let from = t.remindAt > 0 ? Date(timeIntervalSince1970: Double(t.remindAt) / 1000) : Date()
+            let nextDate = When.next(after: Date(), rule: t.repeatRule, from: from)
+            var n = Todo(kind: t.kind, parent: t.parent, title: t.title, notes: t.notes, sort: sortAfter(t), origin: device,
+                         remindAt: Int64(nextDate.timeIntervalSince1970 * 1000), repeatRule: t.repeatRule)
+            n.sort = t.sort + 0.000_001
+            changes.append(n)
+            successor[id] = n.id
+        } else if !t.done, let next = successor[id], var n = byID[next], !n.done {
+            // Un-checking right away takes back the generated next occurrence.
+            n.deleted = true
+            changes.append(n.touched(by: device))
+            successor[id] = nil
+        }
+        commit(changes)
     }
 
     /// Renames, and rewrites [[old title]] links elsewhere so they keep pointing here.
@@ -258,6 +280,17 @@ final class Store {
         let inLogbook = t.done && t.completedAt < dayStart
         if logbook != inLogbook { logbook = inLogbook } else if changed { rebuild() }
     }
+
+    /// Sets or clears (at: 0) a reminder.
+    func setReminder(_ id: String, at: Int64, rule: String) {
+        guard var t = byID[id], !t.isSection, t.remindAt != at || t.repeatRule != rule else { return }
+        t.remindAt = at
+        t.repeatRule = at == 0 ? "" : rule
+        commit([t.touched(by: device)])
+    }
+
+    /// All live todos, for schedulers.
+    var allLive: [Todo] { byID.values.filter { !$0.deleted } }
 
     func setNotes(_ id: String, _ notes: String) {
         guard var t = byID[id], notes != t.notes else { return }

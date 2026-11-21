@@ -26,6 +26,10 @@ public struct Todo: Identifiable, Equatable, Codable, Sendable {
     public var parent: String
     /// When it was filled in (ms), 0 while open.
     public var doneAt: Int64
+    /// Reminder time (ms), 0 for none.
+    public var remindAt: Int64
+    /// Repeat rule ("day:1", "weekdays", ...), "" for none. See When.
+    public var repeatRule: String
     public var title: String
     public var notes: String
     public var done: Bool
@@ -39,15 +43,18 @@ public struct Todo: Identifiable, Equatable, Codable, Sendable {
         case id, kind, parent, title, notes, done, sort, deleted, origin
         case createdAt = "created_at"
         case doneAt = "done_at"
+        case remindAt = "remind_at"
+        case repeatRule = "repeat"
         case updatedAt = "updated_at"
     }
 
     public init(id: String = Todo.newID(), kind: Kind = .mine, parent: String = "", title: String, notes: String = "", done: Bool = false,
                 sort: Double, createdAt: Int64 = Clock.now(), updatedAt: Int64? = nil,
-                deleted: Bool = false, origin: String, doneAt: Int64 = 0) {
+                deleted: Bool = false, origin: String, doneAt: Int64 = 0, remindAt: Int64 = 0, repeatRule: String = "") {
         self.id = id; self.kind = kind; self.parent = parent; self.title = title; self.notes = notes; self.done = done
         self.sort = sort; self.createdAt = createdAt; self.updatedAt = updatedAt ?? createdAt
         self.deleted = deleted; self.origin = origin; self.doneAt = doneAt
+        self.remindAt = remindAt; self.repeatRule = repeatRule
     }
 
     public init(from d: Decoder) throws {
@@ -64,6 +71,8 @@ public struct Todo: Identifiable, Equatable, Codable, Sendable {
         deleted = try c.decode(Bool.self, forKey: .deleted)
         origin = try c.decode(String.self, forKey: .origin)
         doneAt = (try? c.decode(Int64.self, forKey: .doneAt)) ?? 0
+        remindAt = (try? c.decode(Int64.self, forKey: .remindAt)) ?? 0
+        repeatRule = (try? c.decode(String.self, forKey: .repeatRule)) ?? ""
     }
 
     public var glyph: String { kind.glyph(done: done) }

@@ -7,6 +7,16 @@ import CircleCore
 
 setvbuf(stdout, nil, _IOLBF, 0)
 
+// `circle-mcp --when "fri 2pm every week"` prints how a reminder phrase parses.
+if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--when" {
+    for phrase in CommandLine.arguments.dropFirst(2) {
+        if let p = When.parse(phrase) {
+            print("\(phrase) => \(p.date.formatted(.dateTime.weekday().month().day().hour().minute())) [\(p.rule.isEmpty ? "once" : p.rule)]")
+        } else { print("\(phrase) => (none)") }
+    }
+    exit(0)
+}
+
 let repo: TodoRepo = {
     do { return try TodoRepo() } catch {
         FileHandle.standardError.write("circle-mcp: cannot open database: \(error)\n".data(using: .utf8)!)
@@ -31,7 +41,8 @@ func text(_ s: String, error: Bool = false) -> [String: Any] {
 }
 
 func line(_ t: Todo) -> String {
-    "\(t.glyph) \(t.id)  \(t.title)" + (t.notes.isEmpty ? "" : "\n      " + t.notes.replacingOccurrences(of: "\n", with: "\n      "))
+    let when = t.remindAt > 0 && !t.done ? "  ⏰ " + When.long(t.remindAt, rule: t.repeatRule) : ""
+    return "\(t.glyph) \(t.id)  \(t.title)\(when)" + (t.notes.isEmpty ? "" : "\n      " + t.notes.replacingOccurrences(of: "\n", with: "\n      "))
 }
 
 let tools: [[String: Any]] = [
@@ -46,13 +57,15 @@ let tools: [[String: Any]] = [
      "inputSchema": ["type": "object", "required": ["title"], "properties": [
         "title": ["type": "string"], "notes": ["type": "string"],
         "kind": ["type": "string", "enum": ["todo", "agent", "wait"], "description": "Default todo (the user's)"],
-        "parent": ["type": "string", "description": "Id of a todo to nest this under, as a subtask"]]]],
+        "parent": ["type": "string", "description": "Id of a todo to nest this under, as a subtask"],
+        "remind": ["type": "string", "description": "When to remind the user, in plain words: \"tomorrow 9am\", \"fri 2pm every week\", \"30m\""]]]],
     ["name": "update_todo",
      "description": "Change a todo's title, notes or done state. id may be a unique prefix.",
      "inputSchema": ["type": "object", "required": ["id"], "properties": [
         "id": ["type": "string"], "title": ["type": "string"], "notes": ["type": "string"], "done": ["type": "boolean"],
         "kind": ["type": "string", "enum": ["todo", "agent", "wait"]],
-        "parent": ["type": "string", "description": "Nest under this todo id, or \"\" for top level"]]]],
+        "parent": ["type": "string", "description": "Nest under this todo id, or \"\" for top level"],
+        "remind": ["type": "string", "description": "Reminder in plain words, or \"none\" to clear"]]]],
     ["name": "hand_back",
      "description": "Give a todo back when you are blocked on something only the user or the outside world can provide. It becomes □ waiting with your reason appended to its notes.",
      "inputSchema": ["type": "object", "required": ["id", "reason"], "properties": [
@@ -99,7 +112,11 @@ func call(_ name: String, _ a: [String: Any]) throws -> [String: Any] {
             parent = p.id
             sort = (try repo.all(includeDeleted: false).filter { $0.parent == p.id }.map(\.sort).max() ?? 0) + 1
         }
-        let t = Todo(kind: kind, parent: parent, title: title, notes: a["notes"] as? String ?? "", sort: sort, origin: origin)
+        var t = Todo(kind: kind, parent: parent, title: title, notes: a["notes"] as? String ?? "", sort: sort, origin: origin)
+        if let r = a["remind"] as? String, !r.isEmpty {
+            guard let p = When.parse(r) else { return text("Could not read reminder time \"\(r)\"", error: true) }
+            t.remindAt = Int64(p.date.timeIntervalSince1970 * 1000); t.repeatRule = p.rule
+        }
         try repo.saveLocal(t)
         return text("Added: " + line(t))
     case "update_todo", "complete_todo", "delete_todo", "hand_back":
@@ -118,6 +135,11 @@ func call(_ name: String, _ a: [String: Any]) throws -> [String: Any] {
             if let v = a["notes"] as? String { t.notes = v }
             if let v = a["done"] as? Bool, v != t.done { t.setDone(v) }
             if let v = (a["kind"] as? String).flatMap(Kind.init(rawValue:)) { t.kind = v }
+            if let r = a["remind"] as? String {
+                if r.isEmpty || r == "none" { t.remindAt = 0; t.repeatRule = "" }
+                else if let p = When.parse(r) { t.remindAt = Int64(p.date.timeIntervalSince1970 * 1000); t.repeatRule = p.rule }
+                else { return text("Could not read reminder time \"\(r)\"", error: true) }
+            }
             if let pid = a["parent"] as? String {
                 if pid.isEmpty { t.parent = "" }
                 else if let p = try repo.find(pid), p.id != t.id { t.parent = p.id }

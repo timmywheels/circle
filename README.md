@@ -30,6 +30,10 @@ Hand a todo to an agent three ways: end it with `@claude` / `@codex` as you type
 
 Type `# Work` to add a section header, then nest todos under it with `tab` or by dragging. Anything completed before today leaves the list on its own; `L` opens the logbook, grouped by day, where `space` restores an item.
 
+## Reminders
+
+End a todo with `!` and a time: `call dentist !fri 2pm`, `stretch !30m`, `standup !every weekday 9:30`, `pay rent !1st every month`. Or press `m` on a todo. Notifications offer Done, 30 min, 1 hour and Tomorrow. A dismissed or ignored reminder comes back every `renotify_minutes` (default 30) up to `renotify_count` times (default 4); only Done or a snooze stops it. Checking off a repeating todo sends it to the logbook and creates the next occurrence.
+
 ## Settings
 
 `~/Library/Application Support/Circle/settings.json` (⌘, opens it). It reloads as soon as you save, and choices made in the app (agent, model, folder) are written back. `//` comments are allowed.
@@ -45,6 +49,8 @@ Type `# Work` to add a section header, then nest todos under it with `tab` or by
 | `panel` | `auto` (side by side when wide, full window when narrow), `side`, `overlay` |
 | `hints` | inline tips such as `r → claude` |
 | `custom_models` | `{ "codex": ["my-model"] }` |
+| `renotify_minutes`, `renotify_count` | reminder nagging, default 30 and 4 |
+| `reminder_hour` | time used when a reminder has a day but no time, default 9 |
 
 Keys live in `keymap.json` next to it (⌘K → edit keymap), including `"global"` for the summon chord.
 

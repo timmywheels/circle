@@ -58,13 +58,16 @@ struct RootView: View {
             return .handled
         })
         .onAppear { app.openWindow = openWindow; applyFocus() }
+        // Opening or closing details in compact mode swaps which view holds the keys.
+        .onChange(of: panelID) { _, _ in if compact { DispatchQueue.main.async { focus = .list } } }
         .onChange(of: app.focusRequest) { applyFocus() }
     }
 
     private func applyFocus() {
         guard let f = app.focusRequest else { return }
-        focus = f
         app.focusRequest = nil
+        // The target may only exist after this render (list <-> details swap in compact mode).
+        DispatchQueue.main.async { focus = f }
     }
 }
 
@@ -107,6 +110,7 @@ struct InputLine: View {
                 }
                 .onKeyPress(.downArrow) {
                     if !sugg.isEmpty { pick = min(pick + 1, sugg.count - 1); return .handled }
+                    if app.store.selection == nil { app.store.selection = app.store.ordered.first?.id }
                     focus.wrappedValue = .list; return .handled
                 }
                 .onKeyPress(.upArrow) {
@@ -213,20 +217,8 @@ struct TodoList: View {
         return day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()).uppercased()
     }
 
-    private func handle(_ k: KeyPress) -> KeyPress.Result {
-        let s = app.store
-        if k.key == .escape {
-            if app.helpOpen { app.helpOpen = false }
-            else if app.panelOpen { app.panelOpen = false }
-            else if s.logbook { s.logbook = false }
-            else if s.filter != nil { s.filter = nil }
-            else { s.selection = nil }
-            return .handled
-        }
-        guard let a = app.keymap.action(for: k) else { return .ignored }
-        app.perform(a)
-        return .handled
-    }
+    private func handle(_ k: KeyPress) -> KeyPress.Result { app.handleKey(k) }
+
 
 }
 
@@ -286,6 +278,13 @@ struct TodoRow: View {
                 }
             }
             Spacer(minLength: 8)
+            if todo.remindAt > 0 && !todo.done {
+                let overdue = todo.remindAt < Int64(Date().timeIntervalSince1970 * 1000)
+                Text((todo.repeatRule.isEmpty ? "" : "↻ ") + When.short(todo.remindAt))
+                    .font(Theme.small)
+                    .foregroundStyle(overdue ? Color.accentColor : Theme.dim)
+                    .lineLimit(1)
+            }
             if let p = store.progress[todo.id] {
                 Text("\(p.done)/\(p.total)").font(Theme.small)
                     .foregroundStyle(p.done == p.total ? Theme.faint : Theme.dim)
@@ -395,25 +394,38 @@ struct AgentPanel: View {
     var focus: FocusState<Field?>.Binding
     @State private var notes = ""
     @State private var title = ""
+    @State private var editingTitle = false
 
     var body: some View {
         let todo = app.store.todo(todoID)
         let run = app.runner.run(for: todoID)
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 8) {
-            TextField("", text: $title, axis: .vertical)
-                .textFieldStyle(.plain)
-                .fontWeight(.semibold)
-                .lineLimit(1...4)
-                .focused(focus, equals: .title)
-                .onSubmit { app.store.rename(todoID, title); focus.wrappedValue = .notes }
-                .onExitCommand { title = todo?.title ?? ""; focus.wrappedValue = .list }
-                .onChange(of: focus.wrappedValue) { old, new in
-                    if old == .title && new != .title { app.store.rename(todoID, title) }
-                }
+            if editingTitle {
+                TextField("", text: $title, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .fontWeight(.semibold)
+                    .lineLimit(1...4)
+                    .focused(focus, equals: .title)
+                    .onSubmit { app.store.rename(todoID, title); editingTitle = false; focus.wrappedValue = .list }
+                    .onExitCommand { title = todo?.title ?? ""; editingTitle = false; focus.wrappedValue = .list }
+                    .onChange(of: focus.wrappedValue) { old, new in
+                        if old == .title && new != .title { app.store.rename(todoID, title); editingTitle = false }
+                    }
+                    .onAppear { DispatchQueue.main.async { focus.wrappedValue = .title } }
+            } else {
+                // Reads like the list: [[links]] are links. Click the text (or press e) to edit the raw title.
+                LinkedText(text: todo?.title ?? "", done: todo?.done ?? false)
+                    .fontWeight(.semibold)
+                    .lineLimit(4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture { title = todo?.title ?? ""; editingTitle = true }
+            }
             }
             .padding(.leading, 16).padding(.trailing, 16).padding(.top, 30).padding(.bottom, 4)
-            if let t = todo { Stamps(todo: t).padding(.horizontal, 16).padding(.bottom, 8) }
+            if let t = todo { Stamps(todo: t).padding(.horizontal, 16).padding(.bottom, 4) }
+            if let t = todo, !t.isSection { ReminderField(todo: t, focus: focus).padding(.horizontal, 16).padding(.bottom, 6) }
             ZStack(alignment: .topLeading) {
                 if notes.isEmpty {
                     Text("notes").foregroundStyle(Theme.faint).padding(.leading, 5)
@@ -456,6 +468,7 @@ struct AgentPanel: View {
                 Spacer()
             }
         }
+        .modifier(PanelKeys(focus: focus, active: app.compact))
         .overlay(alignment: .topTrailing) {
             Button { app.panelOpen = false; app.focusRequest = .list } label: {
                 Text("×").font(.system(size: 15)).foregroundStyle(Theme.dim)
@@ -467,12 +480,14 @@ struct AgentPanel: View {
         }
         .onAppear { load() }
         .onChange(of: todoID) { _, _ in load() }
+        .onChange(of: app.titleEditRequest) { title = todo?.title ?? ""; editingTitle = true }
         .onChange(of: notes) { _, v in
             if focus.wrappedValue == .notes { app.store.setNotes(todoID, v) }
         }
     }
 
     private func load() {
+        editingTitle = false
         title = app.store.todo(todoID)?.title ?? ""
         notes = app.store.todo(todoID)?.notes ?? ""
         app.runner.loadHistory(todoID)
@@ -489,6 +504,7 @@ struct HelpOverlay: View {
         ("…@claude ↩", "add and hand straight to an agent"),
         ("[[ ", "link another todo (↑↓ tab to pick)"),
         ("# name ↩", "add a section header"),
+        ("…!fri 9am ↩", "add with a reminder (!1st every month, !30m)"),
         ("dbl-click", "details"),
         ("drag", "reorder · right half nests"),
         ("esc", "close panel / leave logbook or filter"),
@@ -733,5 +749,73 @@ struct LinksBlock: View {
                 }
             }
         }
+    }
+}
+
+
+// MARK: reminders and panel keys
+
+/// In compact mode the list is hidden while details are open, so the panel
+/// takes keyboard focus and runs the same key handler.
+struct PanelKeys: ViewModifier {
+    @Environment(AppModel.self) private var app
+    var focus: FocusState<Field?>.Binding
+    let active: Bool
+
+    func body(content: Content) -> some View {
+        if active {
+            content
+                .focusable()
+                .focused(focus, equals: .list)
+                .focusEffectDisabled()
+                .onKeyPress(phases: [.down, .repeat]) { app.handleKey($0) }
+        } else {
+            content
+        }
+    }
+}
+
+/// "remind  tomorrow 9am, every weekday" — type a phrase, ↩ to set, empty to clear.
+struct ReminderField: View {
+    @Environment(AppModel.self) private var app
+    let todo: Todo
+    var focus: FocusState<Field?>.Binding
+    @State private var text = ""
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("remind").foregroundStyle(Theme.faint).frame(width: 52, alignment: .leading)
+            TextField("", text: $text, prompt: Text(todo.remindAt > 0 ? When.long(todo.remindAt, rule: todo.repeatRule)
+                                                                      : "none · tomorrow 9am, every weekday, 30m")
+                .foregroundColor(todo.remindAt > 0 ? Theme.dim : Theme.faint))
+                .textFieldStyle(.plain)
+                .lineLimit(1)
+                .focused(focus, equals: .remind)
+                .onSubmit(apply)
+                .onExitCommand { text = ""; focus.wrappedValue = .list }
+            if todo.remindAt > 0 {
+                Button { app.store.setReminder(todo.id, at: 0, rule: "") } label: { Text("×").foregroundStyle(Theme.faint) }
+                    .buttonStyle(.plain).help("clear reminder")
+            }
+            Spacer(minLength: 0)
+        }
+        .font(Theme.small)
+    }
+
+    private func apply() {
+        let spec = text.trimmingCharacters(in: .whitespaces)
+        defer { text = "" }
+        if spec.isEmpty { focus.wrappedValue = .list; return }
+        if spec == "none" || spec == "clear" {
+            app.store.setReminder(todo.id, at: 0, rule: "")
+        } else if let p = When.parse(spec, defaultHour: app.settings.reminderHour) {
+            let ms = Int64(p.date.timeIntervalSince1970 * 1000)
+            app.store.setReminder(todo.id, at: ms, rule: p.rule)
+            app.say("⏰ " + When.long(ms, rule: p.rule))
+        } else {
+            app.say("couldn't read “\(spec)” as a time")
+            return
+        }
+        focus.wrappedValue = .list
     }
 }

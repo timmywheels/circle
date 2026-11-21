@@ -12,7 +12,7 @@ enum Action: String, CaseIterable, Identifiable {
     case toggle, edit, delete, undo
     case addTop = "add_top", addBelow = "add_below"
     case run, cancel
-    case details, notes
+    case details, notes, remind
     case shapeMine = "shape_mine", shapeAgent = "shape_agent", shapeWaiting = "shape_waiting", cycleShape = "cycle_shape"
     case filterMine = "filter_mine", filterAgent = "filter_agent", filterWaiting = "filter_waiting", filterAll = "filter_all"
     case followLink = "follow_link", back
@@ -41,7 +41,8 @@ enum Action: String, CaseIterable, Identifiable {
         case .addBelow: return "add below selection"
         case .run: return "hand to agent △"
         case .cancel: return "cancel agent run"
-        case .details: return "details panel"
+        case .details: return "open details (again: notes)"
+        case .remind: return "set reminder"
         case .notes: return "edit notes"
         case .shapeMine: return "shape ○ mine"
         case .shapeAgent: return "shape △ agent (runs it)"
@@ -64,10 +65,10 @@ enum Action: String, CaseIterable, Identifiable {
         .down: ["j", "down"], .up: ["k", "up"], .top: ["g", "home"], .bottom: ["shift+g", "end"],
         .moveDown: ["shift+j", "alt+down"], .moveUp: ["shift+k", "alt+up"],
         .indent: ["tab"], .outdent: ["shift+tab"], .collapse: ["h", "left"], .expand: ["l", "right"],
-        .toggle: ["space", "x"], .edit: ["enter", "e"], .delete: ["d", "backspace", "delete"], .undo: ["u", "cmd+z"],
+        .toggle: ["space", "x"], .edit: ["e"], .delete: ["d", "backspace", "delete"], .undo: ["u", "cmd+z"],
         .addTop: ["a", "n", "/"], .addBelow: ["o"],
         .run: ["r", "2", "cmd+enter"], .cancel: ["c"],
-        .details: ["p", "cmd+j"], .notes: ["shift+n"],
+        .details: ["enter", "p", "cmd+j"], .notes: ["shift+n"], .remind: ["m"],
         .shapeMine: ["1"], .shapeAgent: [], .shapeWaiting: ["3"], .cycleShape: ["t"],
         .filterMine: ["alt+1"], .filterAgent: ["alt+2"], .filterWaiting: ["alt+3"], .filterAll: ["alt+0", "0"],
         .followLink: ["f"], .back: ["cmd+["],
