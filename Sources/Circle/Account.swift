@@ -264,7 +264,7 @@ struct AccountSheet: View {
         let acct: Account = app.account
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Sync").font(Theme.title)
+                Text("Sync").font(Theme.uiTitle)
                 Spacer()
                 Button { app.accountOpen = false } label: { Text("×").foregroundStyle(Theme.dim) }.buttonStyle(.plain)
             }
@@ -295,7 +295,7 @@ struct AccountSheet: View {
                 Text("This account already has an encrypted list. Enter your recovery key, or wait a moment for iCloud Keychain to bring the key over from your other Mac.")
                     .foregroundStyle(Theme.body).fixedSize(horizontal: false, vertical: true)
                 TextField("XXXX-XXXX-…", text: $recovery)
-                    .textFieldStyle(.plain).font(Theme.font)
+                    .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced))
                     .padding(8).background(Theme.selection).clipShape(RoundedRectangle(cornerRadius: 5))
                     .onSubmit { Task { await acct.unlock(recoveryKey: recovery) } }
                 HStack {
@@ -311,13 +311,13 @@ struct AccountSheet: View {
                 recoveryBox(acct.vault?.recoveryKey ?? "")
                 if acct.keyWhere == .thisMac {
                     Text("The key is saved on this Mac only (iCloud Keychain isn't available to this build), so use the recovery key on your other Macs.")
-                        .font(Theme.small).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
+                        .font(Theme.uiSmall).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
                 }
                 HStack { Spacer(); Button("I've saved it") { acct.confirmRecoverySaved() }.keyboardShortcut(.defaultAction) }
             case .ready:
                 Text("Signed in\(acct.email.map { " as \($0)" } ?? "") · end-to-end encrypted")
                     .foregroundStyle(Theme.body)
-                Text("Status: \(app.store.syncState.label)").font(Theme.small).foregroundStyle(Theme.dim)
+                Text("Status: \(app.store.syncState.label)").font(Theme.uiSmall).foregroundStyle(Theme.dim)
                 if revealed { recoveryBox(acct.vault?.recoveryKey ?? "") }
                 HStack {
                     Button(revealed ? "Hide recovery key" : "Show recovery key") { revealed.toggle() }
@@ -326,10 +326,10 @@ struct AccountSheet: View {
                 }
             }
             if let e = acct.error {
-                Text(e).font(Theme.small).foregroundStyle(.red.opacity(0.8)).fixedSize(horizontal: false, vertical: true)
+                Text(e).font(Theme.uiSmall).foregroundStyle(.red.opacity(0.8)).fixedSize(horizontal: false, vertical: true)
             }
         }
-        .font(Theme.font)
+        .font(Theme.ui)
         .padding(22)
         .frame(width: 440)
         .background(Theme.bg)
@@ -337,7 +337,7 @@ struct AccountSheet: View {
 
     private func recoveryBox(_ key: String) -> some View {
         HStack(alignment: .top) {
-            Text(key).font(Fonts.swiftUI(size: Settings.shared.fontSize - 1)).textSelection(.enabled)
+            Text(key).font(.system(size: 13, design: .monospaced)).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             Button("Copy") {

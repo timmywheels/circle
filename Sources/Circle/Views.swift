@@ -16,6 +16,10 @@ enum Theme {
     /// Notes body: readable, but quieter than the title.
     static let body = Color.primary.opacity(0.72)
     static var small: Font { Fonts.swiftUI(size: max(9, Settings.shared.fontSize - 2.5)) }
+    /// App chrome (status bar, sheets): the system font at fixed sizes, independent of the list's font and zoom.
+    static let uiSmall = Font.system(size: 11)
+    static let ui = Font.system(size: 13)
+    static let uiTitle = Font.system(size: 15, weight: .semibold)
 }
 
 struct RootView: View {
@@ -146,7 +150,7 @@ struct StatusLine: View {
             .buttonStyle(.plain)
             .help("Sync & account")
         }
-        .font(Theme.small)
+        .font(Theme.uiSmall)
         .foregroundStyle(Theme.dim)
         .padding(.horizontal, app.compact ? 12 : 16)
         .frame(height: 26)
@@ -725,7 +729,7 @@ struct DetailsFooter: View {
                     .help(todo.remindAt > 0 ? When.long(todo.remindAt, rule: todo.repeatRule) + "  (m to change)" : "Remind me (m)")
                 }
             }
-            .font(Theme.small)
+            .font(Theme.uiSmall)
             .foregroundStyle(Theme.faint)
             .padding(.horizontal, 16)
             .frame(height: 26)

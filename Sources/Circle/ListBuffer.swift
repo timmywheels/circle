@@ -730,6 +730,23 @@ final class BufferController: NSObject, NSTextViewDelegate {
         return out.isNull ? nil : out.offsetBy(dx: o.x, dy: o.y)
     }
 
+    /// The current-line band: tight to the text (first row's ascender to last row's descender)
+    /// with equal padding above and below, so it never looks off-center.
+    func band(for l: Line) -> NSRect? {
+        guard let tv = textView, let lm = tv.layoutManager, let ts = tv.textStorage, let top = baseline(for: l) else { return nil }
+        let f = info[l.id ?? ""]?.todo.isSection == true ? sectionFont : font
+        var bottom = top
+        if l.range.length > 1, l.range.location + l.range.length <= ts.length {
+            let gi = lm.glyphIndexForCharacter(at: l.range.location + l.range.length - 1)
+            let frag = lm.lineFragmentRect(forGlyphAt: gi, effectiveRange: nil)
+            bottom = frag.minY + lm.location(forGlyphAt: gi).y + tv.textContainerOrigin.y
+        }
+        let pad: CGFloat = 6
+        let y0 = top - f.ascender - pad
+        let y1 = bottom - f.descender + pad
+        return NSRect(x: 0, y: y0, width: tv.bounds.width, height: y1 - y0)
+    }
+
     /// Baseline of a line's first row, in view coordinates.
     func baseline(for l: Line) -> CGFloat? {
         guard let tv = textView, let lm = tv.layoutManager, let ts = tv.textStorage else { return nil }
@@ -1043,8 +1060,8 @@ final class BufferTextView: NSTextView {
 
         // Current line: a quiet band, stronger when the list has the keyboard.
         if let i = caretIdx, (focused || c.app.panelOpen), sel.length == 0 || !(string as NSString).substring(with: sel).contains("\n"),
-           let r = c.rect(for: ls[i]) {
-            (focused ? NSColor.controlAccentColor.withAlphaComponent(0.11) : NSColor.labelColor.withAlphaComponent(0.06)).setFill()
+           let r = c.band(for: ls[i]) {
+            NSColor.labelColor.withAlphaComponent(focused ? 0.07 : 0.045).setFill()
             NSRect(x: 0, y: r.minY, width: bounds.width, height: r.height).fill()
         }
 
