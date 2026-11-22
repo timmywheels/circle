@@ -209,7 +209,7 @@ final class AppModel {
         if !top, let s = store.selection, let cur = store.todo(s), !cur.isSection, Store.isBlank(cur.title) {
             moveCaret(to: s, column: 0); return
         }
-        let t = store.insertLine(after: top ? nil : store.selection, title: "", firstChildIfOpen: !top)
+        let t = store.insertLine(after: top ? nil : store.selection, title: "", firstChildIfOpen: !top, intoSection: !top)
         moveCaret(to: t.id, column: 0)
     }
 

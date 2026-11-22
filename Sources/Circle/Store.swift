@@ -47,12 +47,22 @@ final class Store {
     @ObservationIgnored private var openGroup: [Todo]?
     @ObservationIgnored private var groupIDs = Set<String>()
 
-    func beginUndoGroup() { openGroup = []; groupIDs = [] }
+    @ObservationIgnored private var groupDepth = 0
+    @ObservationIgnored private var groupKeep = false
+
+    /// Groups nest (a command can trigger a buffer reconcile); the outermost one decides.
+    func beginUndoGroup() {
+        if groupDepth == 0 { openGroup = []; groupIDs = []; groupKeep = false }
+        groupDepth += 1
+    }
 
     /// keep: false drops the group (an ordinary typing edit, which the text view undoes itself).
     func endUndoGroup(keep: Bool) {
+        groupKeep = groupKeep || keep
+        groupDepth = max(0, groupDepth - 1)
+        guard groupDepth == 0 else { return }
         defer { openGroup = nil; groupIDs = [] }
-        guard keep, let g = openGroup, !g.isEmpty else { return }
+        guard groupKeep, let g = openGroup, !g.isEmpty else { return }
         undoStack.append(g)
         if undoStack.count > 50 { undoStack.removeFirst() }
     }
@@ -407,11 +417,12 @@ final class Store {
     /// A new line right after `prev` in the buffer: its first child when prev is an open parent,
     /// otherwise its next sibling. nil puts it at the very top.
     @discardableResult
-    func insertLine(after prev: String?, title: String = "", firstChildIfOpen: Bool = true, undoable: Bool = true) -> Todo {
+    func insertLine(after prev: String?, title: String = "", firstChildIfOpen: Bool = true, intoSection: Bool = false,
+                    undoable: Bool = true) -> Todo {
         var parent = "", sort: Double
         if let p = prev.flatMap({ byID[$0] }), !p.deleted {
             // A new line under a section heading belongs to that section, even an empty or folded one.
-            if p.isSection && filter == nil && !logbook {
+            if intoSection && p.isSection && filter == nil && !logbook {
                 if collapsed.contains(p.id) { setCollapsed(p.id, false) }
                 parent = p.id; sort = (kids[p.id]?.first?.sort ?? 1) - 1
             } else if firstChildIfOpen && filter == nil && !logbook && !collapsed.contains(p.id), let first = kids[p.id]?.first {

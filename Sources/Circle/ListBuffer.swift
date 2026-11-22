@@ -564,6 +564,9 @@ final class BufferController: NSObject, NSTextViewDelegate {
     /// ↩: split the line at the caret (the rest becomes the next todo).
     func newline() -> Bool {
         guard editable, let tv = textView else { return false }
+        // The whole ↩ (rename + new line, or outdent) is one undo step.
+        store.beginUndoGroup()
+        defer { store.endUndoGroup(keep: true) }
         if tv.selectedRange().length > 0 { tv.insertText("", replacementRange: tv.selectedRange()) }
         guard let c = caretLine(), let id = c.line.id, let t = store.todo(id) else {
             let n = store.insertLine(after: nil)
@@ -578,7 +581,10 @@ final class BufferController: NSObject, NSTextViewDelegate {
             render(force: true); placeCaret(on: id, column: (text as NSString).length)
             return true
         }
-        if c.column == 0 && !text.isEmpty {
+        // At the start of a line (for a section: anywhere in its "# " marker), ↩ opens a line above
+        // instead of splitting, so a heading never gets cut into "# " and a todo.
+        let atStart = c.column == 0 || (t.isSection && c.column <= 2)
+        if atStart && !text.isEmpty {
             if let n = store.insertLine(before: id) { render(force: true); _ = n; placeCaret(on: id, column: 0) }
             return true
         }
@@ -586,7 +592,7 @@ final class BufferController: NSObject, NSTextViewDelegate {
         let tail = (text as NSString).substring(from: c.column)
         if tail.isEmpty { head = app.applyLineCommands(id, head) }
         if head != t.title { store.setTitle(id, head) }
-        let n = store.insertLine(after: id, title: tail)
+        let n = store.insertLine(after: id, title: tail, intoSection: t.isSection)
         if head != titleOnEnter { store.rewriteLinks(id, from: titleOnEnter); titleOnEnter = head }
         render(force: true)
         placeCaret(on: n.id, column: 0)
@@ -601,6 +607,9 @@ final class BufferController: NSObject, NSTextViewDelegate {
     }
 
     func perform(_ a: Action) {
+        // A command over several lines (indent, move, delete...) is one undo step.
+        store.beginUndoGroup()
+        defer { store.endUndoGroup(keep: true) }
         let ids = selectedIDs()
         switch a {
         case .indent: guard editable else { return }; for id in ids { store.indent(id) }
