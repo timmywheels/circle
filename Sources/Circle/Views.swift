@@ -27,9 +27,7 @@ struct RootView: View {
         let compact = app.compact
         let panelID = app.panelOpen ? app.store.selection : nil
         let listColumn = VStack(spacing: 0) {
-            InputLine(focus: $focus)
-            Rectangle().fill(Theme.line).frame(height: 1)
-            TodoList(focus: $focus)
+            TodoBuffer()
             Rectangle().fill(Theme.line).frame(height: 1)
             StatusLine()
         }
@@ -75,277 +73,33 @@ struct RootView: View {
     private func applyFocus() {
         guard let f = app.focusRequest else { return }
         app.focusRequest = nil
+        // The list is an AppKit text buffer, not a SwiftUI focus target (except compact details,
+        // where the panel takes the keys while the list is hidden).
+        if [.list, .input, .edit].contains(f) && !(app.compact && app.panelOpen) { app.focusList(); return }
         // The target may only exist after this render (list <-> details swap in compact mode).
         DispatchQueue.main.async { focus = f }
     }
 }
 
-// MARK: input
-
-struct InputLine: View {
-    @Environment(AppModel.self) private var app
-    var focus: FocusState<Field?>.Binding
-    @State private var draft = ""
-    @State private var pick = 0
-
-    /// The text after an unclosed "[[", if the caret is inside a link being typed.
-    private var linkQuery: String? {
-        guard let r = draft.range(of: "[[", options: .backwards) else { return nil }
-        let rest = draft[r.upperBound...]
-        return rest.contains("]]") ? nil : String(rest)
-    }
-
-    private func complete(_ t: Todo) {
-        guard let r = draft.range(of: "[[", options: .backwards) else { return }
-        draft = String(draft[..<r.lowerBound]) + "[[" + t.displayTitle + "]] "
-        pick = 0
-    }
-
-    var body: some View {
-        let sugg = linkQuery.map { app.store.suggestions($0) } ?? []
-        VStack(alignment: .leading, spacing: 0) {
-        HStack(spacing: 10) {
-            Text(app.insertAfter == nil ? "+" : "↳").foregroundStyle(Theme.dim)
-            TextField("", text: $draft, prompt: Text(placeholder).foregroundColor(Theme.faint))
-                .textFieldStyle(.plain)
-                .focused(focus, equals: .input)
-                .onSubmit {
-                    if !sugg.isEmpty { complete(sugg[min(pick, sugg.count - 1)]); focus.wrappedValue = .input }
-                    else { submit() }
-                }
-                .onExitCommand {
-                    if linkQuery != nil { draft += "]]"; return }
-                    draft = ""; app.insertAfter = nil; focus.wrappedValue = .list
-                }
-                .onKeyPress(.downArrow) {
-                    if !sugg.isEmpty { pick = min(pick + 1, sugg.count - 1); return .handled }
-                    if app.store.selection == nil { app.store.selection = app.store.ordered.first?.id }
-                    focus.wrappedValue = .list; return .handled
-                }
-                .onKeyPress(.upArrow) {
-                    if !sugg.isEmpty { pick = max(pick - 1, 0); return .handled }
-                    return .ignored
-                }
-                .onKeyPress(.tab) {
-                    if !sugg.isEmpty { complete(sugg[min(pick, sugg.count - 1)]); return .handled }
-                    return .ignored
-                }
-                .onChange(of: linkQuery) { pick = 0 }
-                .onChange(of: app.inputPrefill) { _, v in if let v { draft = v; app.inputPrefill = nil } }
-                .onAppear { if let v = app.inputPrefill { draft = v; app.inputPrefill = nil } }
-        }
-        .padding(.leading, 16).padding(.trailing, 16)
-        .padding(.top, 30).padding(.bottom, 12)   // clears the traffic lights
-        .contentShape(Rectangle())
-        .onTapGesture { focus.wrappedValue = .input }
-        if !sugg.isEmpty {
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(sugg.enumerated()), id: \.element.id) { i, t in
-                    HStack(spacing: 8) {
-                        Text(t.glyph).foregroundStyle(Theme.faint)
-                        Text(t.title).lineLimit(1)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 10).padding(.vertical, 4)
-                    .background(i == pick ? Theme.selection : .clear)
-                    .contentShape(Rectangle())
-                    .onTapGesture { complete(t); focus.wrappedValue = .input }
-                }
-            }
-            .padding(.vertical, 4)
-            .padding(.leading, 30).padding(.trailing, 16).padding(.bottom, 8)
-        }
-        }
-    }
-
-    private var placeholder: String {
-        if let a = app.insertAfter, let t = app.store.todo(a) { return "add below “\(t.title.prefix(30))”" }
-        guard app.settings.hints && !app.compact else { return "add a todo" }
-        return "add a todo   ·   end with @\(app.registry.current?.id ?? "claude") to hand it off"
-    }
-
-    private func submit() {
-        if let t = app.submit(draft, after: app.insertAfter) {
-            if app.insertAfter != nil { app.insertAfter = t.id } // keep chaining downward
-            app.store.selection = t.id
-        }
-        draft = ""
-        focus.wrappedValue = .input   // stay in flow: type, enter, type, enter
-    }
-}
-
 // MARK: list
 
-struct TodoList: View {
+/// The list buffer, fed with the observable values it depends on.
+struct TodoBuffer: View {
     @Environment(AppModel.self) private var app
-    var focus: FocusState<Field?>.Binding
 
     var body: some View {
-        let store = app.store
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(store.ordered.enumerated()), id: \.element.id) { i, t in
-                        if store.logbook, let label = dayLabel(t, previous: i > 0 ? store.ordered[i - 1] : nil) {
-                            Text(label).font(Theme.small).fontWeight(.semibold).tracking(0.8)
-                                .foregroundStyle(Theme.dim)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.leading, 18).padding(.top, i == 0 ? 6 : 16).padding(.bottom, 4)
-                        }
-                        TodoRow(todo: t, selected: t.id == store.selection, focus: focus)
-                            .id(t.id)
-                    }
-                }
-                .padding(.vertical, 6)
-                .coordinateSpace(.named(listSpace))
-                .overlay(alignment: .topLeading) { DragGhost() }
-                if store.ordered.isEmpty {
-                    Text(store.logbook ? "nothing in the logbook yet. completed items land here the next day."
-                         : store.hideDone ? "all clear. completed items hidden." : "nothing here. start typing.")
-                        .foregroundStyle(Theme.faint)
-                        .padding(.top, 40)
-                }
-                if app.dropHint?.id == AppModel.endDropID {
-                    Rectangle().fill(Color.accentColor).frame(height: 2).padding(.leading, 30)
-                }
-            }
-            .scrollIndicators(.never)
-            .onChange(of: store.selection) { _, id in if let id { proxy.scrollTo(id) } }
-        }
-        .focusable()
-        .focused(focus, equals: .list)
-        .focusEffectDisabled()
-        .onKeyPress(phases: [.down, .repeat]) { press in handle(press) }
-    }
-
-    /// "TODAY", "YESTERDAY", "TUE NOV 18" headers in the logbook.
-    private func dayLabel(_ t: Todo, previous: Todo?) -> String? {
-        let cal = Calendar.current
-        let day = Date(timeIntervalSince1970: Double(t.updatedAt) / 1000)
-        if let p = previous, cal.isDate(day, inSameDayAs: Date(timeIntervalSince1970: Double(p.updatedAt) / 1000)) { return nil }
-        if cal.isDateInToday(day) { return "TODAY" }
-        if cal.isDateInYesterday(day) { return "YESTERDAY" }
-        return day.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()).uppercased()
-    }
-
-    private func handle(_ k: KeyPress) -> KeyPress.Result {
-        // While a row is being renamed inline, keys belong to the text field.
-        guard focus.wrappedValue == .list else { return .ignored }
-        return app.handleKey(k)
-    }
-
-
-}
-
-struct TodoRow: View {
-    @Environment(AppModel.self) private var app
-    let todo: Todo
-    let selected: Bool
-    var focus: FocusState<Field?>.Binding
-    @State private var editText = ""
-
-    var body: some View {
-        let run = app.runner.run(for: todo.id)
-        let store = app.store
-        let level = store.filter == nil ? (store.depth[todo.id] ?? 0) : 0
-        let hasKids = store.hasChildren(todo.id)
-        HStack(spacing: 10) {
-            Group {
-                if hasKids && store.filter == nil {
-                    Text(store.collapsed.contains(todo.id) ? "▸" : "▾")
-                        .foregroundStyle(Theme.faint)
-                        .contentShape(Rectangle())
-                        .onTapGesture { store.setCollapsed(todo.id, !store.collapsed.contains(todo.id)) }
-                } else {
-                    Color.clear
-                }
-            }
-            .frame(width: 10)
-            .padding(.leading, CGFloat(level) * 22)
-            .padding(.trailing, -4)
-            if !todo.isSection {
-                ShapeGlyph(todo: todo, running: run?.status == .running)
-                    .frame(width: 14)
-                    .contentShape(Rectangle())
-                    .onTapGesture { app.store.toggle(todo.id) }
-                    .help("click to fill in · 1 ○ mine · 2 △ agent · 3 □ waiting")
-            }
-            if app.editingID == todo.id {
-                TextField("", text: $editText)
-                    .textFieldStyle(.plain)
-                    .focused(focus, equals: .edit)
-                    .onAppear { editText = todo.title }
-                    .onSubmit { app.store.rename(todo.id, editText); endEdit() }
-                    .onExitCommand { endEdit() }
-                    .onChange(of: focus.wrappedValue) { _, f in
-                        if f != .edit && app.editingID == todo.id { app.store.rename(todo.id, editText); app.editingID = nil }
-                    }
-            } else {
-                if todo.isSection {
-                    Text(todo.displayTitle.uppercased())
-                        .font(Theme.small).fontWeight(.semibold).tracking(0.8)
-                        .foregroundStyle(Theme.dim)
-                        .lineLimit(1)
-                } else {
-                    LinkedText(text: todo.title, done: todo.done)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            }
-            Spacer(minLength: 8)
-            if todo.remindAt > 0 && !todo.done {
-                let overdue = todo.remindAt < Int64(Date().timeIntervalSince1970 * 1000)
-                Text((todo.repeatRule.isEmpty ? "" : "↻ ") + When.short(todo.remindAt))
-                    .font(Theme.small)
-                    .foregroundStyle(overdue ? Color.accentColor : Theme.dim)
-                    .lineLimit(1)
-            }
-            if let p = store.progress[todo.id] {
-                Text("\(p.done)/\(p.total)").font(Theme.small)
-                    .foregroundStyle(p.done == p.total ? Theme.faint : Theme.dim)
-            }
-            if !todo.notes.isEmpty { Text("¶").foregroundStyle(Theme.faint) }
-            if store.logbook {
-                Text(Date(timeIntervalSince1970: Double(todo.completedAt) / 1000), format: .dateTime.hour().minute())
-                    .font(Theme.small).foregroundStyle(Theme.faint)
-            }
-            if let run { RunBadge(run: run) }
-            else if selected && app.settings.hints && !app.compact && !todo.done && !todo.isSection && app.editingID != todo.id, let a = app.registry.current {
-                Text("r → \(a.id)").font(Theme.small).foregroundStyle(Theme.faint)
-            }
-        }
-        .padding(.leading, 8).padding(.trailing, 16)
-        .padding(.vertical, 5)
-        .background(selected ? (focus.wrappedValue == .list ? Color.accentColor.opacity(0.16) : Theme.selection) : .clear)
-        // Breathing room above top-level sections sits outside the highlight.
-        .padding(.top, todo.isSection && level == 0 ? 9 : 0)
-        .overlay(alignment: app.dropHint?.after == true ? .bottom : .top) {
-            if let h = app.dropHint, h.id == todo.id {
-                Rectangle().fill(Color.accentColor).frame(height: 2)
-                    .padding(.leading, 8 + CGFloat(h.depth) * 22 + 14)
-            }
-        }
-        .contentShape(Rectangle())
-        .contextMenu { RowMenu(todo: todo) }
-        .onTapGesture {
-            app.store.selection = todo.id
-            focus.wrappedValue = .list
-            if todo.isSection { app.store.setCollapsed(todo.id, !app.store.collapsed.contains(todo.id)); return }
-            if NSApp.currentEvent?.clickCount == 2 { app.panelOpen = true }
-        }
-        .opacity(app.draggingID == todo.id ? 0.35 : 1)
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(listSpace)) } action: { app.rowFrames[todo.id] = $0 }
-        // In-app drag: no system drag session, so nothing floats or animates after the drop.
-        .gesture(
-            DragGesture(minimumDistance: 4, coordinateSpace: .named(listSpace))
-                .onChanged { v in app.dragMoved(todo.id, to: v.location) }
-                .onEnded { v in app.dragEnded(at: v.location) }
-        )
-    }
-
-    private func endEdit() {
-        app.editingID = nil
-        focus.wrappedValue = .list
+        let s = app.store
+        let set = Settings.shared
+        ListBuffer(app: app,
+                   revision: s.revision,
+                   selection: s.selection,
+                   focusToken: app.listFocusToken,
+                   caretToken: app.caretToken,
+                   dropHint: app.dropHint,
+                   runsKey: app.runner.runs.map { "\($0.key):\($0.value.status)" }.sorted().joined(separator: ","),
+                   styleKey: "\(set.fontSize)|\(set.fontFamily)|\(set.fontWeight)",
+                   editable: !s.logbook,
+                   panelOpen: app.panelOpen)
     }
 }
 
@@ -396,13 +150,11 @@ struct StatusLine: View {
     /// The few keys that matter for where the keyboard is right now.
     private var hint: String {
         switch app.currentFocus {
-        case .input: return "↩ add · # section · !remind · @agent · ↓ list"
         case .notes, .title, .remind, .edit: return "esc done"
         case .palette: return "↑↓ pick · ↩ run · esc close"
         default:
-            if app.panelOpen { return "← back · ↩ notes · ↑↓ next · m remind" }
-            if app.store.ordered.isEmpty { return "a add · ⇧⌘N section" }
-            return "↩ open · space done · tab nest · ⌘K"
+            if app.panelOpen { return "esc close · ⌘J details · ⇧⌘R remind" }
+            return "↩ new · tab nest · ⌘↩ done · ⌘J details · ⌘K"
         }
     }
 
@@ -481,7 +233,7 @@ struct AgentPanel: View {
                     Text("not run yet")
                 }
                 Spacer()
-                Text(run?.status == .running ? "c cancel" : "⌘↩ run").foregroundStyle(Theme.faint)
+                Text(run?.status == .running ? "⌘. cancel" : "⇧⌘↩ run").foregroundStyle(Theme.faint)
             }
             .font(Theme.small).foregroundStyle(Theme.dim)
             .padding(.horizontal, 16).frame(height: 26)
@@ -532,13 +284,14 @@ struct HelpOverlay: View {
     @Environment(AppModel.self) private var app
 
     private let extras: [(String, String)] = [
-        ("type ↩", "add todo (input stays focused)"),
-        ("…@claude ↩", "add and hand straight to an agent"),
-        ("[[ ", "link another todo (↑↓ tab to pick)"),
-        ("# name ↩", "add a section header"),
-        ("…!fri 9am ↩", "add with a reminder (!1st every month, !30m)"),
-        ("dbl-click", "details"),
-        ("drag", "reorder · right half nests"),
+        ("↩", "new line (splits at the caret)"),
+        ("⌫ at start", "join with the line above"),
+        ("…@claude ↩", "hand the line to an agent"),
+        ("…!fri 9am ↩", "remind (!1st every month, !30m)"),
+        ("# name", "section header"),
+        ("[[ ", "link another todo"),
+        ("⇧↑↓ ⌘C ⌘V", "select, copy, paste lines (markdown lists)"),
+        ("click shape", "fill in · drag it to move"),
         ("esc", "close panel / leave logbook or filter"),
     ]
 
@@ -693,7 +446,7 @@ struct RowMenu: View {
 
     private func edit() {
         app.store.selection = todo.id
-        if app.panelOpen { app.titleEditRequest += 1 } else { app.editingID = todo.id; app.focusRequest = .edit }
+        if app.panelOpen { app.titleEditRequest += 1 } else { app.moveCaret(to: todo.id, column: nil) }
     }
 
     private func remind(_ phrase: String, keepRule: Bool) {

@@ -35,7 +35,7 @@ struct CircleApp: App {
                 // Menu shortcuts work even while typing in a field; list keys live in keymap.json.
                 Button("Command Palette") { app.paletteOpen.toggle() }.keyboardShortcut("k")
                 Button("Details Panel") { app.panelOpen.toggle(); if !app.panelOpen { app.focusRequest = .list } }.keyboardShortcut("j")
-                Button("Hand to Agent") { app.runSelected() }.keyboardShortcut(.return, modifiers: .command)
+                Button("Hand to Agent") { app.runSelected() }.keyboardShortcut(.return, modifiers: [.command, .shift])
                 Button("Back") { app.perform(.back) }.keyboardShortcut("[")
                 Divider()
                 Button("Keyboard Shortcuts") { app.helpOpen.toggle() }.keyboardShortcut("/")
@@ -119,6 +119,11 @@ final class AppModel {
     }
 
     var focusRequest: Field? = .input
+    /// Bumped to put the keyboard in the list buffer.
+    var listFocusToken = 0
+    /// Bumped with `caretRequest` set to move the buffer's caret to a line (and column).
+    var caretToken = 0
+    @ObservationIgnored var caretRequest: (id: String, column: Int?)?
     var insertAfter: String?          // "o" adds below this id
     var editingID: String?
     var paletteOpen = false { didSet { if !paletteOpen { focusRequest = .list } } }
@@ -170,17 +175,75 @@ final class AppModel {
     }
 
     /// Starts a new top-level section: "# " in the input, ↩ adds it.
+    /// A new "# " line at the bottom of the buffer, caret after the marker.
     func newSection() {
-        panelOpen = false
-        insertAfter = nil
-        focusRequest = .input
-        // Fill after the field has focus, so the caret lands after "# " instead of selecting it.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.inputPrefill = "# " }
+        if compact { panelOpen = false }
+        let last = store.ordered.last(where: { store.depth[$0.id] ?? 0 == 0 })?.id
+        let t = store.insertLine(after: last, title: "# ", firstChildIfOpen: false)
+        if last == nil, let first = store.ordered.first, first.id != t.id { store.moveToEnd(t.id) }
+        moveCaret(to: t.id, column: 2)
     }
 
+    /// A new blank line (top of the list, or under the current one) with the caret on it.
     func focusInput(top: Bool) {
-        insertAfter = top ? nil : store.selection
-        focusRequest = .input
+        if compact { panelOpen = false }
+        let t = store.insertLine(after: top ? nil : store.selection, title: "", firstChildIfOpen: !top)
+        moveCaret(to: t.id, column: 0)
+    }
+
+    func moveCaret(to id: String, column: Int?) {
+        store.selection = id
+        caretRequest = (id, column)
+        caretToken &+= 1
+        focusList()
+    }
+
+    func focusList() { listFocusToken &+= 1 }
+
+    /// esc: close what is open, one layer at a time.
+    func escape() {
+        if helpOpen { helpOpen = false }
+        else if paletteOpen { paletteOpen = false }
+        else if panelOpen { panelOpen = false; focusList() }
+        else if store.logbook { store.logbook = false }
+        else if store.filter != nil { store.filter = nil }
+    }
+
+    /// ↩ at the end of a line: a trailing "!fri 9am" sets a reminder, "@claude" hands it off.
+    /// Returns the title with those stripped.
+    @discardableResult
+    func applyLineCommands(_ id: String, _ raw: String) -> String {
+        var words = raw.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        var agent: AgentDef?
+        var mention = false
+        if let last = words.last, last.hasPrefix("@"), words.count > 1 {
+            let name = last.dropFirst().lowercased()
+            if name.isEmpty || name == "agent" { mention = true; agent = registry.current }
+            else if let a = registry.available.first(where: { $0.id == name }) { mention = true; agent = a }
+            if mention { words.removeLast() }
+        }
+        var title = mention ? words.joined(separator: " ") : raw
+        var when: When.Parsed?
+        if let bang = title.range(of: " !", options: .backwards) {
+            let spec = String(title[bang.upperBound...])
+            if let p = When.parse(spec, defaultHour: settings.reminderHour) {
+                when = p
+                title = String(title[..<bang.lowerBound])
+            }
+        }
+        guard mention || when != nil else { return raw }
+        store.setTitle(id, title)
+        if let w = when {
+            store.setReminder(id, at: Int64(w.date.timeIntervalSince1970 * 1000), rule: w.rule)
+            say("remind " + When.long(Int64(w.date.timeIntervalSince1970 * 1000), rule: w.rule))
+        }
+        if let a = agent {
+            if a.id != registry.agentID { registry.choose(a, model: registry.models(for: a).first ?? "default") }
+            handToAgent(id)
+        } else if mention {
+            say("no agent CLIs found on PATH")
+        }
+        return title
     }
 
     func summon() {
@@ -262,9 +325,7 @@ final class AppModel {
         let sel = s.selection
         switch a {
         case .down: s.select(1)
-        case .up:
-            // From the first row, ↑ goes back up to the input.
-            if s.selectedIndex == 0 && !panelOpen { s.selection = nil; focusRequest = .input } else { s.select(-1) }
+        case .up: s.select(-1)
         case .top: s.selection = s.ordered.first?.id
         case .bottom: s.selection = s.ordered.last?.id
         case .moveDown: if let id = sel { s.move(id, 1) }
@@ -275,8 +336,8 @@ final class AppModel {
         case .expand: s.right()
         case .toggle: if let id = sel { s.toggle(id) }
         case .edit:
-            guard sel != nil else { return }
-            if panelOpen { titleEditRequest += 1 } else { editingID = sel; focusRequest = .edit }
+            guard let id = sel else { return }
+            moveCaret(to: id, column: nil)
         case .delete: if let id = sel { s.delete(id) }
         case .undo: s.undo()
         case .addTop: focusInput(top: true)
@@ -285,8 +346,8 @@ final class AppModel {
         case .cancel: if let id = sel { runner.cancel(id) }
         case .details:
             guard sel != nil else { return }
-            if panelOpen && editingID == nil { focusRequest = .notes } else { panelOpen = true }
-        case .remind: if sel != nil { panelOpen = true; remindEditing = true; focusRequest = .remind }
+            if panelOpen { panelOpen = false; focusList() } else { panelOpen = true }
+        case .remind: if sel != nil, s.todo(sel)?.isSection == false { panelOpen = true; remindEditing = true; focusRequest = .remind }
         case .notes: if sel != nil { panelOpen = true; focusRequest = .notes }
         case .shapeMine: if let id = sel { s.setKind(id, .mine) }
         case .shapeWaiting: if let id = sel { s.setKind(id, .waiting) }
@@ -314,14 +375,10 @@ final class AppModel {
     /// Keyboard entry point for the list (and the details panel in compact mode).
     func handleKey(_ k: KeyPress) -> KeyPress.Result {
         let s = store
-        if k.key == .escape {
-            if helpOpen { helpOpen = false }
-            else if panelOpen { panelOpen = false; focusRequest = .list }
-            else if s.logbook { s.logbook = false }
-            else if s.filter != nil { s.filter = nil }
-            else { s.selection = nil }
-            return .handled
-        }
+        if k.key == .escape { escape(); return .handled }
+        // Compact details: ↑↓ step through todos while the list is hidden.
+        if k.key == .downArrow { s.select(1); return .handled }
+        if k.key == .upArrow { s.select(-1); return .handled }
         // While details are open, ← (and h) means back, before it means collapse.
         // Arrow keys arrive with .numericPad/.function set; only real modifiers count.
         let held = k.modifiers.contains(.command) || k.modifiers.contains(.option)
@@ -346,9 +403,8 @@ final class AppModel {
     /// Selects a todo, expanding its ancestors and leaving filters/logbook so it is visible.
     func reveal(_ id: String) {
         store.reveal(id)
-        store.selection = id
         panelOpen = true
-        focusRequest = .list
+        moveCaret(to: id, column: nil)
     }
 
     func reloadKeymap() {

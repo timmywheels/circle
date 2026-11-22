@@ -8,6 +8,8 @@ import CircleCore
 final class Store {
     /// Visible rows, depth-first through the tree.
     private(set) var ordered: [Todo] = []
+    /// Bumped on every rebuild; the list buffer compares it to know when the store moved without it.
+    private(set) var revision = 0
     /// Indent level per visible row.
     private(set) var depth: [String: Int] = [:]
     /// (done, total) direct children per parent, for the progress badge.
@@ -120,6 +122,7 @@ final class Store {
         }
         ordered = rows
         depth = d
+        revision &+= 1
         onRebuilt?(live)
         if let s = selection, !rows.contains(where: { $0.id == s }) { selection = nil }
     }
@@ -162,8 +165,11 @@ final class Store {
         for t in ts { byID[t.id] = t }
         rebuild()
         let repo = repo
+        // A blank line in the buffer lives in memory only; it is saved once it has text.
+        let persist = ts.filter { $0.deleted || !Self.isBlank($0.title) }
+        guard !persist.isEmpty else { return }
         q.async { [weak self] in
-            try? repo.saveLocal(ts)
+            try? repo.saveLocal(persist)
             let v = repo.dataVersion()
             DispatchQueue.main.async { self?.lastVersion = v; self?.onLocalChange?() }
         }
@@ -314,10 +320,127 @@ final class Store {
         if undoStack.count > 50 { undoStack.removeFirst() }
     }
 
+    /// Restores the snapshots taken before a change (deletes come back, inserts go away, moves return).
     func undo() {
         guard let group = undoStack.popLast() else { return }
-        commit(group.map { var c = $0; c.deleted = false; return c.touched(by: device) })
-        selection = group.first?.id
+        commit(group.map { $0.touched(by: device) })
+        selection = group.first(where: { !$0.deleted })?.id ?? selection
+    }
+
+    // MARK: buffer editing (the list is one text buffer; each line is a todo)
+
+    static func isBlank(_ title: String) -> Bool {
+        let t = title.trimmingCharacters(in: .whitespaces)
+        return t.isEmpty || t == "#"
+    }
+
+    /// Live title edit from the buffer: no trimming, blanks allowed, no link rewriting.
+    func setTitle(_ id: String, _ title: String) {
+        guard var t = byID[id], t.title != title else { return }
+        t.title = title
+        commit([t.touched(by: device)])
+    }
+
+    /// After a line was edited: keep [[old title]] links elsewhere pointing at it.
+    func rewriteLinks(_ id: String, from oldTitle: String) {
+        guard let t = byID[id], !Self.isBlank(oldTitle) else { return }
+        let old = oldTitle.hasPrefix("# ") ? String(oldTitle.dropFirst(2)) : oldTitle
+        let new = t.displayTitle
+        guard Links.key(old) != Links.key(new), !Links.key(new).isEmpty else { return }
+        let oldKey = Links.key(old)
+        var changed: [Todo] = []
+        for o in byID.values where !o.deleted && o.id != id {
+            guard (Links.names(in: o.title) + Links.names(in: o.notes)).contains(where: { Links.key($0) == oldKey }) else { continue }
+            var c = o
+            c.title = Links.rename(in: c.title, from: old, to: new)
+            c.notes = Links.rename(in: c.notes, from: old, to: new)
+            changed.append(c.touched(by: device))
+        }
+        commit(changed)
+    }
+
+    /// A new line right after `prev` in the buffer: its first child when prev is an open parent,
+    /// otherwise its next sibling. nil puts it at the very top.
+    @discardableResult
+    func insertLine(after prev: String?, title: String = "", firstChildIfOpen: Bool = true, undoable: Bool = true) -> Todo {
+        var parent = "", sort: Double
+        if let p = prev.flatMap({ byID[$0] }), !p.deleted {
+            if firstChildIfOpen && filter == nil && !logbook && !collapsed.contains(p.id), let first = kids[p.id]?.first {
+                parent = p.id; sort = first.sort - 1
+            } else {
+                parent = parentID(p); sort = sortAfter(p)
+            }
+        } else {
+            sort = ((kids[""] ?? []).first?.sort ?? 0) - 1
+        }
+        let t = Todo(kind: filter ?? .mine, parent: parent, title: title, sort: sort, origin: device)
+        if undoable { var gone = t; gone.deleted = true; pushUndo([gone]) }
+        commit([t])
+        return t
+    }
+
+    /// A new line just above `id`, as its sibling.
+    @discardableResult
+    func insertLine(before id: String) -> Todo? {
+        guard let tg = byID[id] else { return nil }
+        let p = parentID(tg)
+        let sibs = kids[p] ?? []
+        let i = sibs.firstIndex(where: { $0.id == id }) ?? 0
+        let sort = i > 0 ? (sibs[i - 1].sort + tg.sort) / 2 : tg.sort - 1
+        let t = Todo(kind: filter ?? tg.kind, parent: p, title: "", sort: sort, origin: device)
+        var gone = t; gone.deleted = true; pushUndo([gone])
+        commit([t])
+        return t
+    }
+
+    /// Last child of `parent` (pasting an indented list).
+    @discardableResult
+    func appendChild(_ parent: String, title: String) -> Todo? {
+        guard byID[parent] != nil else { return nil }
+        let t = Todo(kind: filter ?? .mine, parent: parent, title: title, sort: ((kids[parent] ?? []).last?.sort ?? 0) + 1, origin: device)
+        commit([t])
+        collapsed.remove(parent)
+        return t
+    }
+
+    func setDone(_ id: String, _ on: Bool) {
+        guard var t = byID[id], t.done != on, !t.isSection else { return }
+        t.setDone(on)
+        commit([t.touched(by: device)])
+    }
+
+    /// A line removed from the buffer. Its visible children stay (they move into its place, or
+    /// into `mergeInto` when its text was joined onto that line); a folded line takes its subtree with it.
+    func removeLine(_ id: String, mergeInto target: String? = nil, undoable: Bool = true) {
+        guard let t = byID[id], !t.deleted else { return }
+        let children = kids[id] ?? []
+        var snapshot = [t]
+        var changes: [Todo] = []
+        if !children.isEmpty && (!collapsed.contains(id) || target != nil) {
+            snapshot += children
+            if let target, byID[target] != nil, target != id, !isInside(target, id) {
+                var s = (kids[target] ?? []).last?.sort ?? 0
+                for c in children { var m = c; m.parent = target; s += 1; m.sort = s; changes.append(m.touched(by: device)) }
+                collapsed.remove(target)
+            } else {
+                let p = parentID(t)
+                let sibs = kids[p] ?? []
+                let i = sibs.firstIndex(where: { $0.id == id }) ?? 0
+                let next = i + 1 < sibs.count ? sibs[i + 1].sort : t.sort + 1
+                let step = (next - t.sort) / Double(children.count + 1)
+                for (k, c) in children.enumerated() {
+                    var m = c; m.parent = p; m.sort = t.sort + step * Double(k + 1); changes.append(m.touched(by: device))
+                }
+            }
+        } else if !children.isEmpty {
+            let sub = descendants(id)
+            snapshot += sub
+            changes += sub.map { var c = $0; c.deleted = true; return c.touched(by: device) }
+        }
+        if undoable { pushUndo(snapshot) }
+        var d = t; d.deleted = true
+        changes.append(d.touched(by: device))
+        commit(changes)
     }
 
     /// Removes completed items whose whole subtree is completed.

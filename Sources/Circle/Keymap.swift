@@ -62,20 +62,27 @@ enum Action: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The list is a text buffer, so letters always type. Commands are chords (Zed style);
+    /// arrows, ↩, ⌫ and selection are plain editing. All of it is remappable in keymap.json.
     static let defaults: [Action: [String]] = [
-        .down: ["j", "down"], .up: ["k", "up"], .top: ["g", "home"], .bottom: ["shift+g", "end"],
-        .moveDown: ["shift+j", "alt+down"], .moveUp: ["shift+k", "alt+up"],
-        .indent: ["tab"], .outdent: ["shift+tab"], .collapse: ["h", "left"], .expand: ["l", "right"],
-        .toggle: ["space", "x"], .edit: ["e"], .delete: ["d", "backspace", "delete"], .undo: ["u", "cmd+z"],
-        .addTop: ["a", "n", "/"], .addBelow: ["o"], .newSection: ["shift+s"],
-        .run: ["r", "2", "cmd+enter"], .cancel: ["c"],
-        .details: ["enter", "p", "cmd+j"], .notes: ["shift+n"], .remind: ["m"],
-        .shapeMine: ["1"], .shapeAgent: [], .shapeWaiting: ["3"], .cycleShape: ["t"],
-        .filterMine: ["alt+1"], .filterAgent: ["alt+2"], .filterWaiting: ["alt+3"], .filterAll: ["alt+0", "0"],
-        .followLink: ["f"], .back: ["cmd+["],
-        .hideDone: ["shift+h"], .logbook: ["shift+l"],
-        .palette: ["cmd+k"], .help: ["?", "cmd+/"],
+        .down: [], .up: [], .top: [], .bottom: [],
+        .moveDown: ["alt+down"], .moveUp: ["alt+up"],
+        .indent: ["tab"], .outdent: ["shift+tab"], .collapse: ["cmd+alt+["], .expand: ["cmd+alt+]"],
+        .toggle: ["cmd+enter"], .edit: [], .delete: ["cmd+shift+k"], .undo: [],
+        .addTop: [], .addBelow: [], .newSection: [],
+        .run: ["cmd+shift+enter"], .cancel: ["cmd+."],
+        .details: ["cmd+j"], .notes: [], .remind: ["cmd+shift+r"],
+        .shapeMine: ["cmd+1"], .shapeAgent: ["cmd+2"], .shapeWaiting: ["cmd+3"], .cycleShape: [],
+        .filterMine: ["alt+1"], .filterAgent: ["alt+2"], .filterWaiting: ["alt+3"], .filterAll: ["alt+0"],
+        .followLink: ["cmd+alt+enter"], .back: ["cmd+["],
+        .hideDone: ["cmd+shift+h"], .logbook: ["cmd+shift+l"],
+        .palette: ["cmd+k"], .help: ["cmd+/"],
     ]
+
+    /// Keys the buffer gives to commands instead of typing: anything with ⌘ ⌥ ⌃, plus tab.
+    static func isCommandChord(_ c: Chord) -> Bool {
+        !c.mods.isDisjoint(with: ["cmd", "alt", "ctrl"]) || c.key == "tab" || c.key == "escape"
+    }
 }
 
 /// A key plus modifiers, normalised: "cmd+shift+k", "space", "alt+down".
@@ -110,6 +117,29 @@ struct Chord: Hashable {
         if key == "esc" { key = "escape" }
         self.key = key
         self.mods = mods
+    }
+
+    /// Candidate chords for an AppKit key event (the list buffer sees NSEvents, not KeyPresses).
+    static func from(_ e: NSEvent) -> [Chord] {
+        let f = e.modifierFlags
+        var mods = Set<String>()
+        if f.contains(.command) { mods.insert("cmd") }
+        if f.contains(.option) { mods.insert("alt") }
+        if f.contains(.control) { mods.insert("ctrl") }
+        if f.contains(.shift) { mods.insert("shift") }
+        let named: [UInt16: String] = [126: "up", 125: "down", 123: "left", 124: "right", 36: "enter", 76: "enter",
+                                       49: "space", 48: "tab", 51: "backspace", 117: "delete", 53: "escape",
+                                       115: "home", 119: "end"]
+        if let n = named[e.keyCode] { return [Chord(key: n, mods: mods)] }
+        var out: [Chord] = []
+        let base = (e.charactersIgnoringModifiers ?? "").lowercased()
+        if !base.isEmpty { out.append(Chord(key: base, mods: mods)) }
+        // "?" / "+" typed with shift also match a binding written without it.
+        if mods.contains("shift"), let typed = e.charactersIgnoringModifiers, !typed.isEmpty, typed != typed.lowercased() || !(typed.first?.isLetter ?? true) {
+            var m = mods; m.remove("shift")
+            out.append(Chord(key: typed, mods: m))
+        }
+        return out
     }
 
     var label: String {
@@ -174,7 +204,11 @@ final class Keymap {
                 if let b = obj["bindings"] as? [String: Any] {
                     for (name, v) in b {
                         guard let a = Action(rawValue: name) else { error = "unknown action \"\(name)\""; continue }
-                        if let one = v as? String { map[a] = [one] } else if let many = v as? [String] { map[a] = many }
+                        var keys: [String] = []
+                        if let one = v as? String { keys = [one] } else if let many = v as? [String] { keys = many }
+                        // Older keymaps bound bare letters (j, x, d); in a text buffer those type, so they are dropped.
+                        let chords = keys.filter { Chord($0).map(Action.isCommandChord) ?? false }
+                        map[a] = chords.isEmpty && !keys.isEmpty ? (Action.defaults[a] ?? []) : chords
                     }
                 }
                 if let g = obj["global"] as? String { globalHotkey = g }
@@ -188,6 +222,11 @@ final class Keymap {
         }
         bindings = b
         lookup = l
+    }
+
+    func action(for e: NSEvent) -> Action? {
+        for c in Chord.from(e) { if let a = lookup[c] { return a } }
+        return nil
     }
 
     func action(for k: KeyPress) -> Action? {

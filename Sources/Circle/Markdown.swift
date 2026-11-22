@@ -245,7 +245,9 @@ struct MarkdownHook: NSViewRepresentable {
     }
 
     private static func find(in v: NSView) -> NSTextView? {
-        if let tv = v as? NSTextView, !tv.isFieldEditor, tv.isEditable, tv.enclosingScrollView != nil { return tv }
+        // Only the notes editor: never the list buffer (it styles itself) or a field editor.
+        if let tv = v as? NSTextView, !(tv is BufferTextView), !tv.isFieldEditor, tv.isEditable, tv.enclosingScrollView != nil { return tv }
+        if v is NSScrollView, (v as? NSScrollView)?.documentView is BufferTextView { return nil }
         for s in v.subviews { if let t = find(in: s) { return t } }
         return nil
     }
