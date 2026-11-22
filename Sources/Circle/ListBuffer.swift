@@ -117,7 +117,26 @@ final class BufferController: NSObject, NSTextViewDelegate {
     var completing = false
     var editable = true
 
-    init(app: AppModel) { self.app = app }
+    init(app: AppModel) {
+        self.app = app
+        super.init()
+        Self.installReturnMonitor()
+    }
+
+    /// ↩ in the list is caught before the window sees it, so no SwiftUI default action or key
+    /// equivalent can swallow it, and it never falls through to a plain "\n".
+    private static var returnMonitor: Any?
+    private static func installReturnMonitor() {
+        guard returnMonitor == nil else { return }
+        returnMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            guard e.keyCode == 36 || e.keyCode == 76,
+                  e.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+                  let tv = e.window?.firstResponder as? BufferTextView, !tv.hasMarkedText(),
+                  let c = tv.controller else { return e }
+            let handled = MainActor.assumeIsolated { !c.completing && c.newline() }
+            return handled ? nil : e
+        }
+    }
 
     // MARK: fonts and geometry
 
@@ -399,22 +418,31 @@ final class BufferController: NSObject, NSTextViewDelegate {
     func reconcile() {
         guard let tv = textView, let ts = tv.textStorage else { return }
         let ls = lines()
-        // Where each id's characters ended up (a joined line leaves its chars on the line above).
+        // Where each id's characters ended up (a joined line leaves its chars on the line above),
+        // and how many per line: the line holding most of a todo's text keeps that todo, so a split
+        // never hands the original (with its notes, runs and children) to a copy.
         var foundIn: [String: Int] = [:]
+        var counts: [String: [Int: Int]] = [:]
         for (i, l) in ls.enumerated() where l.range.length > 0 {
-            ts.enumerateAttribute(.todoID, in: l.range) { v, _, _ in
-                if let v = v as? String, foundIn[v] == nil { foundIn[v] = i }
+            ts.enumerateAttribute(.todoID, in: l.range) { v, r, _ in
+                guard let v = v as? String else { return }
+                if foundIn[v] == nil { foundIn[v] = i }
+                counts[v, default: [:]][i, default: 0] += r.length
             }
+        }
+        func owner(_ x: String) -> Int? {
+            counts[x]?.max { a, b in a.value != b.value ? a.value < b.value : a.key > b.key }?.key
         }
         var seen = Set<String>()
         var ids: [String] = []
         var structural = false
         var prev: String?
         let s = ts.string as NSString
-        for l in ls {
+        for (i, l) in ls.enumerated() {
             let text = s.substring(with: l.range)
             var id = l.id
             if let x = id, seen.contains(x) || store.todo(x)?.deleted != false { id = nil }
+            if let x = id, let o = owner(x), o != i { id = nil }
             if let x = id, let t = store.todo(x) {
                 seen.insert(x)
                 if t.title != text {
@@ -477,7 +505,8 @@ final class BufferController: NSObject, NSTextViewDelegate {
     /// The caret left a line: blank lines go away, renamed ones fix links pointing at them.
     private func left(_ id: String, titleWas: String) {
         guard let t = store.todo(id), !t.deleted, id != caretID else { return }
-        if Store.isBlank(t.title) {
+        // Only a line that is nothing but an empty title goes away on its own.
+        if Store.isBlank(t.title) && t.notes.isEmpty && t.remindAt == 0 && !store.hasChildren(id) && app.runner.run(for: id) == nil {
             store.removeLine(id, undoable: false)
             render(force: true)
         } else if t.title != titleWas {
@@ -827,7 +856,17 @@ final class BufferTextView: NSTextView {
 
     override func keyDown(with e: NSEvent) {
         if let c = controller, MainActor.assumeIsolated({ c.handleKey(e) }) { return }
+        // ↩ is a line operation, not a typed "\n": handle it here so it can't fall through to plain insertion.
+        let mods = e.modifierFlags.intersection([.command, .option, .control])
+        if (e.keyCode == 36 || e.keyCode == 76) && mods.isEmpty && !hasMarkedText(),
+           let c = controller, MainActor.assumeIsolated({ c.newline() }) { return }
         super.keyDown(with: e)
+    }
+
+    override func doCommand(by selector: Selector) {
+        if selector == #selector(insertNewline(_:)) || selector == #selector(insertLineBreak(_:)) || selector == #selector(insertParagraphSeparator(_:)),
+           let c = controller, MainActor.assumeIsolated({ c.newline() }) { return }
+        super.doCommand(by: selector)
     }
 
     override func insertNewline(_ sender: Any?) {

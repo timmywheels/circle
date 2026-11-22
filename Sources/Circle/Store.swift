@@ -58,6 +58,7 @@ final class Store {
         // Synchronous initial load so the first frame already has data.
         for t in (try? repo.all()) ?? [] { byID[t.id] = t }
         lastVersion = repo.dataVersion()
+        repairSplitLoss()
         rebuild()
         selection = ordered.first?.id
         startPolling()
@@ -325,6 +326,32 @@ final class Store {
         guard let group = undoStack.popLast() else { return }
         commit(group.map { $0.touched(by: device) })
         selection = group.first(where: { !$0.deleted })?.id ?? selection
+    }
+
+    /// One-time repair for an early list-buffer bug: ↩ at the start of a line copied the todo to a
+    /// new line and deleted the original (blanked), taking its notes and agent runs with it.
+    /// Brings each original back under the copy's title and removes the copy.
+    private func repairSplitLoss() {
+        let key = "repair-split-v1"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        let cutoff = Clock.now() - 48 * 3600 * 1000
+        var changes: [Todo] = []
+        var used = Set<String>()
+        let live = byID.values.filter { !$0.deleted && !Self.isBlank($0.title) }
+        for d in byID.values where d.deleted && Self.isBlank(d.title) && d.updatedAt > cutoff && d.updatedAt - d.createdAt > 60_000 {
+            let copies = live.filter { !used.contains($0.id) && $0.notes.isEmpty && abs($0.createdAt - d.updatedAt) < 5_000 }
+            guard let c = copies.min(by: { abs($0.createdAt - d.updatedAt) < abs($1.createdAt - d.updatedAt) }) else { continue }
+            used.insert(c.id)
+            var r = d
+            r.title = c.title; r.deleted = false; r.parent = c.parent; r.sort = c.sort
+            var gone = c; gone.deleted = true
+            changes.append(r.touched(by: device)); changes.append(gone.touched(by: device))
+        }
+        guard !changes.isEmpty else { return }
+        for t in changes { byID[t.id] = t }
+        let repo = repo
+        q.async { try? repo.saveLocal(changes) }
     }
 
     // MARK: buffer editing (the list is one text buffer; each line is a todo)
