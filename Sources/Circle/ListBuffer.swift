@@ -800,7 +800,8 @@ final class BufferController: NSObject, NSTextViewDelegate {
             guard let id = l.id, let li = info[id], let r = rect(for: l), p.y >= r.minY, p.y < r.maxY else { continue }
             let gx = glyphX(depth: li.depth)
             if li.hasKids, p.x >= chevronX(depth: li.depth) - 4, p.x < gx - 2 { return .chevron(id) }
-            if !li.todo.isSection, p.x >= gx - 5, p.x < gx + glyphWidth + 5 { return .glyph(id) }
+            // The whole gutter left of the title grabs the todo, not just the shape itself.
+            if !li.todo.isSection, p.x >= (li.hasKids ? gx - 2 : gx - 12), p.x < textX(depth: li.depth, section: false) - 3 { return .glyph(id) }
             if let m = li.meta, p.x > tv.bounds.width - 16 - m.size().width - 8 { return .meta(id) }
             if let lm = tv.layoutManager, let tc = tv.textContainer, let ts = tv.textStorage, ts.length > 0 {
                 let o = tv.textContainerOrigin
@@ -900,6 +901,43 @@ final class BufferTextView: NSTextView {
     let localUndo = UndoManager()
 
     override var undoManager: UndoManager? { localUndo }
+
+    /// Hover: the row under the mouse lifts its shape a little; the shape itself gets a handle.
+    private var hoverRow: String?
+    private var hoverGlyph: String?
+    private var hoverArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let a = hoverArea { removeTrackingArea(a) }
+        let a = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(a)
+        hoverArea = a
+    }
+
+    override func mouseMoved(with e: NSEvent) {
+        super.mouseMoved(with: e)
+        guard let c = controller else { return }
+        let p = convert(e.locationInWindow, from: nil)
+        let (row, glyph): (String?, String?) = MainActor.assumeIsolated {
+            var row: String?
+            for l in c.lines() {
+                if let id = l.id, let r = c.rect(for: l), p.y >= r.minY, p.y < r.maxY { row = id; break }
+            }
+            if case .glyph(let id) = c.hit(p) { return (row, id) }
+            return (row, nil)
+        }
+        if row != hoverRow || glyph != hoverGlyph {
+            hoverRow = row; hoverGlyph = glyph
+            needsDisplay = true
+        }
+    }
+
+    override func mouseExited(with e: NSEvent) {
+        super.mouseExited(with: e)
+        if hoverRow != nil || hoverGlyph != nil { hoverRow = nil; hoverGlyph = nil; needsDisplay = true }
+    }
 
     override func setFrameSize(_ newSize: NSSize) {
         let changed = abs(newSize.width - frame.width) > 0.5
@@ -1037,6 +1075,7 @@ final class BufferTextView: NSTextView {
             if ev.type == .leftMouseDragged {
                 if !dragging && hypot(q.x - start.x, q.y - start.y) > 4 {
                     dragging = true
+                    NSCursor.closedHand.push()
                     MainActor.assumeIsolated { c.publishFrames() }
                 }
                 if dragging {
@@ -1045,6 +1084,7 @@ final class BufferTextView: NSTextView {
                     needsDisplay = true
                 }
             } else {
+                if dragging { NSCursor.pop() }
                 MainActor.assumeIsolated {
                     if dragging { c.app.dragEnded(at: q) } else { c.toggleDone(id) }
                 }
@@ -1069,12 +1109,17 @@ final class BufferTextView: NSTextView {
 
     override func resetCursorRects() {
         super.resetCursorRects()
+        removeAllToolTips()
         guard let c = controller else { return }
         MainActor.assumeIsolated {
             for l in c.lines() {
                 guard let id = l.id, let li = c.info[id], let r = c.rect(for: l) else { continue }
                 if !li.todo.isSection {
-                    addCursorRect(NSRect(x: c.glyphX(depth: li.depth) - 5, y: r.minY, width: c.glyphWidth + 10, height: r.height), cursor: .pointingHand)
+                    let gx = c.glyphX(depth: li.depth)
+                    let x0 = li.hasKids ? gx - 2 : gx - 12
+                    let grab = NSRect(x: x0, y: r.minY, width: c.textX(depth: li.depth, section: false) - 3 - x0, height: r.height)
+                    addCursorRect(grab, cursor: .openHand)
+                    addToolTip(grab, owner: "Click to complete, drag to move" as NSString, userData: nil)
                 }
                 if li.hasKids {
                     addCursorRect(NSRect(x: c.chevronX(depth: li.depth) - 4, y: r.minY, width: 14, height: r.height), cursor: .pointingHand)
@@ -1120,8 +1165,22 @@ final class BufferTextView: NSTextView {
                 chev.draw(at: NSPoint(x: c.chevronX(depth: li.depth), y: base - c.smallFont.ascender))
             }
             if !li.todo.isSection {
-                let color: NSColor = li.running ? Theme.nsAccent : (li.todo.done ? BufferController.faint : BufferController.dim)
+                let hot = hoverGlyph == id || draggingID == id
+                let lifted = hoverRow == id && !li.todo.done
+                let color: NSColor = li.running ? Theme.nsAccent
+                    : hot ? BufferController.label
+                    : li.todo.done ? BufferController.faint
+                    : lifted ? NSColor.labelColor.withAlphaComponent(0.6) : BufferController.dim
                 let g = NSAttributedString(string: li.todo.glyph, attributes: [.font: font, .foregroundColor: color])
+                if hot {
+                    // Center the handle on the shape's ink, whatever font it falls back to.
+                    let ink = g.boundingRect(with: NSSize(width: 100, height: 100), options: [.usesDeviceMetrics])
+                    let cx = c.glyphX(depth: li.depth) + ink.midX
+                    let cy = base - ink.midY
+                    let d = max(ink.width, ink.height) + 12
+                    NSColor.labelColor.withAlphaComponent(0.1).setFill()
+                    NSBezierPath(ovalIn: NSRect(x: cx - d / 2, y: cy - d / 2, width: d, height: d)).fill()
+                }
                 g.draw(at: NSPoint(x: c.glyphX(depth: li.depth), y: base - font.ascender))
             }
             if let m = li.meta {
