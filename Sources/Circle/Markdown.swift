@@ -31,6 +31,7 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
     }
 
     func attach(_ tv: NSTextView) {
+        tv.insertionPointColor = .labelColor
         guard let ts = tv.textStorage else { return }
         let key = ObjectIdentifier(tv)
         if views[key]?.tv == nil {
@@ -155,13 +156,14 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
         }
         for m in Self.wiki.matches(in: line, range: lr) {
             let name = (line as NSString).substring(with: m.range(at: 1))
-            ts.addAttributes([.foregroundColor: NSColor.controlAccentColor, .circleLink: "wiki:" + name,
+            ts.addAttributes([.foregroundColor: label, .underlineStyle: NSUnderlineStyle.single.rawValue,
+                              .underlineColor: NSColor.labelColor.withAlphaComponent(0.3), .circleLink: "wiki:" + name,
                               .cursor: NSCursor.pointingHand], range: abs(m.range(at: 1)))
             markers(m)
         }
         for m in Self.url.matches(in: line, range: lr) {
             let u = (line as NSString).substring(with: m.range)
-            ts.addAttributes([.foregroundColor: NSColor.controlAccentColor, .circleLink: u,
+            ts.addAttributes([.foregroundColor: label, .underlineColor: NSColor.labelColor.withAlphaComponent(0.3), .circleLink: u,
                               .underlineStyle: NSUnderlineStyle.single.rawValue, .cursor: NSCursor.pointingHand], range: abs(m.range))
         }
     }

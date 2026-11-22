@@ -20,6 +20,13 @@ enum Theme {
     static let uiSmall = Font.system(size: 11)
     static let ui = Font.system(size: 13)
     static let uiTitle = Font.system(size: 15, weight: .semibold)
+    /// The one color in the app: a muted amber for "needs attention" (overdue, an agent working, drop target).
+    static let nsAccent = NSColor(name: nil) { a in
+        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.88, green: 0.66, blue: 0.40, alpha: 1)
+            : NSColor(srgbRed: 0.70, green: 0.45, blue: 0.15, alpha: 1)
+    }
+    static let accent = Color(nsColor: nsAccent)
 }
 
 struct RootView: View {
@@ -112,7 +119,7 @@ struct RunBadge: View {
     let run: AgentRun
     var body: some View {
         switch run.status {
-        case .running: Text("● \(run.agent)").foregroundStyle(Color.accentColor).font(Theme.small)
+        case .running: Text("● \(run.agent)").foregroundStyle(Theme.accent).font(Theme.small)
         case .done: Text(run.agent).foregroundStyle(Theme.faint).font(Theme.small)
         case .failed: Text("✕ \(run.agent)").foregroundStyle(.red.opacity(0.7)).font(Theme.small)
         case .cancelled: Text("– \(run.agent)").foregroundStyle(Theme.faint).font(Theme.small)
@@ -356,7 +363,7 @@ struct ShapeGlyph: View {
             TimelineView(.animation(minimumInterval: 1 / 30)) { ctx in
                 let t = ctx.date.timeIntervalSinceReferenceDate
                 Text(todo.glyph)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(Theme.accent)
                     .opacity(0.45 + 0.55 * (0.5 + 0.5 * sin(t * 3)))
             }
         } else {
@@ -532,7 +539,7 @@ struct LinkedText: View {
             let name = String(rest[open.upperBound..<close.lowerBound])
             var link = AttributedString(name)
             let exists = app.store.resolve(name) != nil
-            let linkColor: Color = done ? Theme.faint : (exists ? Color.accentColor : Theme.dim)
+            let linkColor: Color = done ? Theme.faint : (exists ? Color.primary : Theme.dim)
             link.foregroundColor = linkColor
             link.underlineStyle = exists ? Text.LineStyle.single : Text.LineStyle(pattern: .dot)
             var c = URLComponents(); c.scheme = "circle"; c.host = "open"; c.queryItems = [URLQueryItem(name: "t", value: name)]
@@ -610,7 +617,7 @@ struct LinksBlock: View {
                     Button { app.openLink(named: items[i].0) } label: {
                         HStack(spacing: 6) {
                             Text(items[i].1).foregroundStyle(Theme.faint)
-                            Text(items[i].0).foregroundStyle(Color.accentColor).lineLimit(1)
+                            Text(items[i].0).foregroundStyle(Color.primary).underline(color: Theme.faint).lineLimit(1)
                         }
                     }
                     .buttonStyle(.plain)

@@ -65,7 +65,7 @@ struct ListBuffer: NSViewRepresentable {
         tv.usesFindBar = true
         tv.isIncrementalSearchingEnabled = true
         tv.textContainerInset = NSSize(width: 0, height: BufferController.topInset)
-        tv.insertionPointColor = .controlAccentColor
+        tv.insertionPointColor = .labelColor
         tv.delegate = c
         scroll.documentView = tv
         c.textView = tv
@@ -191,11 +191,19 @@ final class BufferController: NSObject, NSTextViewDelegate {
 
     // MARK: rendering
 
-    private func meta(for t: Todo) -> NSAttributedString? {
+    private func meta(for t: Todo, depth: Int) -> NSAttributedString? {
+        guard let full = meta(for: t, compact: false) else { return nil }
+        // Narrow column or big font: badges shrink to marks so the title keeps the room.
+        let room = (textView?.bounds.width ?? 600) - textX(depth: depth, section: t.isSection) - 16
+        return full.size().width + 14 > room * 0.28 ? meta(for: t, compact: true) : full
+    }
+
+    private func meta(for t: Todo, compact: Bool) -> NSAttributedString? {
         var parts: [(String, NSColor)] = []
         if t.remindAt > 0 && !t.done {
             let overdue = t.remindAt < Int64(Date().timeIntervalSince1970 * 1000)
-            parts.append(((t.repeatRule.isEmpty ? "" : "↻ ") + When.short(t.remindAt), overdue ? .controlAccentColor : Self.dim))
+            let text = compact ? "\u{25F7}" : (t.repeatRule.isEmpty ? "" : "↻ ") + When.short(t.remindAt)
+            parts.append((text, overdue ? Theme.nsAccent : Self.dim))
         }
         if let p = store.progress[t.id] { parts.append(("\(p.done)/\(p.total)", p.done == p.total ? Self.faint : Self.dim)) }
         if !t.notes.isEmpty { parts.append(("¶", Self.faint)) }
@@ -204,10 +212,10 @@ final class BufferController: NSObject, NSTextViewDelegate {
         }
         if let run = app.runner.run(for: t.id) {
             switch run.status {
-            case .running: parts.append(("● \(run.agent)", .controlAccentColor))
-            case .failed: parts.append(("✕ \(run.agent)", NSColor.systemRed.withAlphaComponent(0.75)))
-            case .cancelled: parts.append(("– \(run.agent)", Self.faint))
-            case .done: parts.append((run.agent, Self.faint))
+            case .running: parts.append((compact ? "●" : "● \(run.agent)", Theme.nsAccent))
+            case .failed: parts.append((compact ? "✕" : "✕ \(run.agent)", NSColor.systemRed.withAlphaComponent(0.75)))
+            case .cancelled: parts.append((compact ? "–" : "– \(run.agent)", Self.faint))
+            case .done: if !compact { parts.append((run.agent, Self.faint)) }
             }
         }
         guard !parts.isEmpty else { return nil }
@@ -227,10 +235,10 @@ final class BufferController: NSObject, NSTextViewDelegate {
         for t in store.ordered {
             let d = store.filter == nil && !store.logbook ? (store.depth[t.id] ?? 0) : 0
             let kids = store.filter == nil && !store.logbook && store.hasChildren(t.id)
-            let m = meta(for: t)
+            let m = meta(for: t, depth: d)
             next[t.id] = LineInfo(todo: t, depth: d, hasKids: kids, collapsed: store.collapsed.contains(t.id),
                                   meta: m, running: app.runner.run(for: t.id)?.status == .running)
-            sig += t.id; sig += "\u{1}"; sig += t.title; sig += "\u{1}\(d)\(t.done ? 1 : 0)\(m?.length ?? 0)\u{2}"
+            sig += t.id; sig += "\u{1}"; sig += t.title; sig += "\u{1}\(d)\(t.done ? 1 : 0)\(m?.string ?? "")\u{2}"
         }
         info = next
         knownRevision = store.revision
@@ -269,7 +277,9 @@ final class BufferController: NSObject, NSTextViewDelegate {
             let inner = NSRange(location: r.location + m.range(at: 1).location, length: m.range(at: 1).length)
             s.addAttribute(.foregroundColor, value: Self.faint, range: whole)
             let exists = store.resolve(name) != nil
-            s.addAttributes([.foregroundColor: t.done ? Self.faint : (exists ? NSColor.controlAccentColor : Self.dim),
+            s.addAttributes([.foregroundColor: t.done ? Self.faint : (exists ? Self.label : Self.dim),
+                             .underlineStyle: exists && !t.done ? NSUnderlineStyle.single.rawValue : 0,
+                             .underlineColor: Self.faint,
                              .circleLink: "wiki:" + name], range: inner)
         }
     }
@@ -277,6 +287,12 @@ final class BufferController: NSObject, NSTextViewDelegate {
     private static let linkRE = try! NSRegularExpression(pattern: #"\[\[([^\[\]\n]+)\]\]"#)
 
     /// Rebuilds the text from the store when the lines changed shape; otherwise just repaints.
+    /// Badges switch between full and compact with the column width.
+    func widthChanged() {
+        guard textView != nil, !info.isEmpty else { return }
+        render(force: false)
+    }
+
     func render(force: Bool) {
         guard let tv = textView, let ts = tv.textStorage else { return }
         let sig = refreshInfo()
@@ -875,6 +891,12 @@ final class BufferTextView: NSTextView {
 
     override var undoManager: UndoManager? { localUndo }
 
+    override func setFrameSize(_ newSize: NSSize) {
+        let changed = abs(newSize.width - frame.width) > 0.5
+        super.setFrameSize(newSize)
+        if changed, let c = controller { MainActor.assumeIsolated { c.widthChanged() } }
+    }
+
     override func keyDown(with e: NSEvent) {
         if let c = controller, MainActor.assumeIsolated({ c.handleKey(e) }) { return }
         // ↩ is a line operation, not a typed "\n": handle it here so it can't fall through to plain insertion.
@@ -1088,7 +1110,7 @@ final class BufferTextView: NSTextView {
                 chev.draw(at: NSPoint(x: c.chevronX(depth: li.depth), y: base - c.smallFont.ascender))
             }
             if !li.todo.isSection {
-                let color: NSColor = li.running ? .controlAccentColor : (li.todo.done ? BufferController.faint : BufferController.dim)
+                let color: NSColor = li.running ? Theme.nsAccent : (li.todo.done ? BufferController.faint : BufferController.dim)
                 let g = NSAttributedString(string: li.todo.glyph, attributes: [.font: font, .foregroundColor: color])
                 g.draw(at: NSPoint(x: c.glyphX(depth: li.depth), y: base - font.ascender))
             }
@@ -1108,7 +1130,7 @@ final class BufferTextView: NSTextView {
                 x = 8 + CGFloat(h.depth) * BufferController.indentStep + 14
             }
             if let y {
-                NSColor.controlAccentColor.setFill()
+                Theme.nsAccent.setFill()
                 NSRect(x: x, y: y - 1, width: bounds.width - x - 16, height: 2).fill()
             }
         }
