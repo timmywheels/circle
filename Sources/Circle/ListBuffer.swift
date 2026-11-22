@@ -290,9 +290,19 @@ final class BufferController: NSObject, NSTextViewDelegate {
 
     /// Rebuilds the text from the store when the lines changed shape; otherwise just repaints.
     /// Badges switch between full and compact with the column width.
+    /// Deferred and coalesced: a resize can arrive mid-layout or mid-edit, and rebuilding the text
+    /// storage right there is unsafe. Next runloop turn, and never under marked text.
+    private var widthPending = false
     func widthChanged() {
-        guard textView != nil, !info.isEmpty else { return }
-        render(force: false)
+        guard !widthPending else { return }
+        widthPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.widthPending = false
+            guard let tv = self.textView, !self.info.isEmpty, !tv.hasMarkedText(),
+                  (tv.textStorage?.editedMask ?? []).isEmpty else { return }
+            self.render(force: false)
+        }
     }
 
     func render(force: Bool) {
