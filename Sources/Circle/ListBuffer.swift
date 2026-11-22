@@ -628,6 +628,15 @@ final class BufferController: NSObject, NSTextViewDelegate {
             return
         case .shapeMine: for id in ids { store.setKind(id, .mine) }
         case .shapeWaiting: for id in ids { store.setKind(id, .waiting) }
+        case .collapse where ids.count > 1:
+            // A selection folds every line in it that has children.
+            for id in ids where store.hasChildren(id) { store.setCollapsed(id, true) }
+            render(force: true)
+            return
+        case .expand where ids.count > 1:
+            for id in ids where store.hasChildren(id) { store.setCollapsed(id, false) }
+            render(force: true)
+            return
         case .collapse:
             if let id = caretID, store.hasChildren(id) { store.setCollapsed(id, true) }
             else if let id = caretID, let t = store.todo(id), !t.parent.isEmpty, renderedIDs.contains(t.parent) {
