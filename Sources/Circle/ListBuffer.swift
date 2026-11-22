@@ -256,8 +256,10 @@ final class BufferController: NSObject, NSTextViewDelegate {
         let mw = li.meta.map { $0.size().width + 14 } ?? 0
         p.tailIndent = -(16 + mw)
         p.lineSpacing = 2
-        p.paragraphSpacingBefore = t.isSection && li.depth == 0 && !first ? 15 : 5
-        p.paragraphSpacing = 5
+        // All the gap sits after a line: TextKit gives an empty last line (the extra line fragment)
+        // no "before" spacing, so splitting the gap made the last row sit closer than the rest.
+        p.paragraphSpacingBefore = first ? 5 : (t.isSection && li.depth == 0 ? 10 : 0)
+        p.paragraphSpacing = 10
         var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: t.done ? Self.faint : Self.label,
                                                     .paragraphStyle: p, .todoID: id]
         if t.done { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue; attrs[.strikethroughColor] = Self.faint }
@@ -774,13 +776,21 @@ final class BufferController: NSObject, NSTextViewDelegate {
     func baseline(for l: Line) -> CGFloat? {
         guard let tv = textView, let lm = tv.layoutManager, let ts = tv.textStorage else { return nil }
         let o = tv.textContainerOrigin
+        // Empty lines have no glyph to measure, so their baseline is computed the way TextKit lays out
+        // text: top of the line + spacing before + the font's baseline offset. Same place the caret goes.
         if l.range.location >= ts.length {
             let r = lm.extraLineFragmentRect
             guard !r.isEmpty else { return nil }
-            return r.minY + o.y + 5 + font.ascender
+            let before = (tv.typingAttributes[.paragraphStyle] as? NSParagraphStyle)?.paragraphSpacingBefore ?? 0
+            return r.minY + o.y + before + lm.defaultBaselineOffset(for: font)
         }
         let gi = lm.glyphIndexForCharacter(at: l.range.location)
         let frag = lm.lineFragmentRect(forGlyphAt: gi, effectiveRange: nil)
+        if l.range.length == 0 {
+            let p = ts.attribute(.paragraphStyle, at: l.range.location, effectiveRange: nil) as? NSParagraphStyle
+            let f = ts.attribute(.font, at: l.range.location, effectiveRange: nil) as? NSFont ?? font
+            return frag.minY + o.y + (p?.paragraphSpacingBefore ?? 0) + lm.defaultBaselineOffset(for: f)
+        }
         return frag.minY + lm.location(forGlyphAt: gi).y + o.y
     }
 
