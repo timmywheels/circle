@@ -56,6 +56,7 @@ struct RootView: View {
         .overlay {
             if app.helpOpen { HelpOverlay().onTapGesture { app.helpOpen = false } }
         }
+        .sheet(isPresented: Binding(get: { app.accountOpen }, set: { app.accountOpen = $0 })) { AccountSheet() }
         .transaction { $0.animation = nil }   // nothing animates; everything is immediate
         .environment(\.openURL, OpenURLAction { url in
             guard url.scheme == "circle", let name = URLComponents(url: url, resolvingAgainstBaseURL: false)?
@@ -136,10 +137,14 @@ struct StatusLine: View {
             if let f = app.flash, !f.isEmpty { Text(f).foregroundStyle(Color.primary.opacity(0.7)).lineLimit(1) }
             if app.store.logbook { Text("logbook").foregroundStyle(Color.primary) }
             ShapeCounts()
-            HStack(spacing: 5) {
-                Circle().fill(syncColor).frame(width: 6, height: 6)
-                if !app.compact { Text(app.store.syncState.label) }
+            Button { app.accountOpen = true } label: {
+                HStack(spacing: 5) {
+                    Circle().fill(syncColor).frame(width: 6, height: 6)
+                    if !app.compact { Text(app.account.isReady ? app.store.syncState.label : "sign in to sync") }
+                }
             }
+            .buttonStyle(.plain)
+            .help("Sync & account")
         }
         .font(Theme.small)
         .foregroundStyle(Theme.dim)

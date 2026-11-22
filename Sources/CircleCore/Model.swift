@@ -139,13 +139,25 @@ public enum Paths {
     public static var syncConfig: URL { support.appendingPathComponent("sync.json") }
 }
 
+/// sync.json: the server, and who is signed in. Secrets (session, account key) live in the keychain.
+/// `token` is the pre-accounts shared token, kept only until the old unencrypted copy is wiped.
 public struct SyncConfig: Codable {
     public var url: String
-    public var token: String
+    public var token: String?
+    public var user: String?
+    public var email: String?
+
+    public init(url: String) { self.url = url }
 
     public static func load() -> SyncConfig? {
         guard let d = try? Data(contentsOf: Paths.syncConfig) else { return nil }
         return try? JSONDecoder().decode(SyncConfig.self, from: d)
+    }
+
+    public func save() {
+        guard let d = try? JSONEncoder().encode(self) else { return }
+        try? d.write(to: Paths.syncConfig, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Paths.syncConfig.path)
     }
 
     public var socketURL: URL? {

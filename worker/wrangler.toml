@@ -10,3 +10,15 @@ class_name = "SyncRoom"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SyncRoom"]
+
+[[durable_objects.bindings]]
+name = "SEALED"
+class_name = "SealedRoom"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["SealedRoom"]
+
+[vars]
+APPLE_AUDIENCE = "com.timwheeler.circle"
+APPLE_SERVICES_ID = "com.timwheeler.circle.signin"

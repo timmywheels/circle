@@ -2,42 +2,165 @@ import { DurableObject } from "cloudflare:workers";
 
 export interface Env {
   ROOM: DurableObjectNamespace<SyncRoom>;
-  CIRCLE_TOKEN: string;
+  SEALED: DurableObjectNamespace<SealedRoom>;
+  /** Legacy single-user token (plaintext room). Only used to migrate off it and wipe it. */
+  CIRCLE_TOKEN?: string;
+  /** HMAC secret for session tokens issued after Sign in with Apple. */
+  SESSION_SECRET: string;
+  /** Bundle id the Apple identity token must be issued for (native sign-in). */
+  APPLE_AUDIENCE?: string;
+  /** Services ID used for the web sign-in flow (the app opens it in a secure Apple sheet). */
+  APPLE_SERVICES_ID?: string;
 }
 
-type Kind = "todo" | "agent" | "wait";
-const KINDS: Kind[] = ["todo", "agent", "wait"];
-
-type Row = {
-  id: string;
-  kind: Kind;
-  parent: string;
-  done_at: number;
-  remind_at: number;
-  repeat: string;
-  title: string;
-  notes: string;
-  done: boolean;
-  sort: number;
-  created_at: number;
-  updated_at: number;
-  deleted: boolean;
-  origin: string;
-};
+const SESSION_DAYS = 365;
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === "/health") return new Response("ok");
-    const bearer = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? url.searchParams.get("token");
-    if (!env.CIRCLE_TOKEN || !bearer || !timingSafeEqual(bearer, env.CIRCLE_TOKEN)) {
-      return new Response("unauthorized", { status: 401 });
+
+    // Web sign-in: the app opens /auth/apple/start in an ASWebAuthenticationSession; Apple posts
+    // the result to /auth/apple/callback, which hands a session back via circle://auth?...
+    if (url.pathname === "/auth/apple/start" && req.method === "GET") {
+      const nonce = b64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
+      const exp = Math.floor(Date.now() / 1000) + 600;
+      const body = `st.${nonce}.${exp}`;
+      const state = `${body}.${await hmac(body, env)}`;
+      const a = new URL("https://appleid.apple.com/auth/authorize");
+      a.searchParams.set("client_id", env.APPLE_SERVICES_ID ?? "com.timwheeler.circle.signin");
+      a.searchParams.set("redirect_uri", `${url.origin}/auth/apple/callback`);
+      a.searchParams.set("response_type", "code id_token");
+      a.searchParams.set("response_mode", "form_post");
+      a.searchParams.set("scope", "email");
+      a.searchParams.set("state", state);
+      a.searchParams.set("nonce", nonce);
+      return Response.redirect(a.toString(), 302);
     }
-    // Single user: one room holds the whole list.
-    const room = env.ROOM.get(env.ROOM.idFromName("default"));
-    return room.fetch(req);
+
+    if (url.pathname === "/auth/apple/callback" && req.method === "POST") {
+      const form = await req.formData();
+      const back = (q: Record<string, string>) => {
+        const u = new URL("circle://auth");
+        for (const [k, v] of Object.entries(q)) u.searchParams.set(k, v);
+        return Response.redirect(u.toString(), 302);
+      };
+      if (form.get("error")) return back({ error: String(form.get("error")) });
+      try {
+        const state = String(form.get("state") ?? "");
+        const parts = state.split(".");
+        if (parts.length !== 4 || parts[0] !== "st") throw new Error("bad state");
+        const body = parts.slice(0, 3).join(".");
+        if (!timingSafeEqual(await hmac(body, env), parts[3])) throw new Error("bad state");
+        if (Number(parts[2]) * 1000 < Date.now()) throw new Error("sign in took too long");
+        const claims = await verifyAppleToken(String(form.get("id_token") ?? ""), env.APPLE_SERVICES_ID ?? "com.timwheeler.circle.signin");
+        if ((claims as any).nonce !== parts[1]) throw new Error("bad nonce");
+        let email = claims.email ?? "";
+        try { email = email || JSON.parse(String(form.get("user") ?? "{}"))?.email || ""; } catch {}
+        const session = await issueSession(claims.sub, env);
+        return back({ session, user: claims.sub, email });
+      } catch (e) {
+        return back({ error: String((e as Error).message ?? e) });
+      }
+    }
+
+    if (url.pathname === "/auth/apple" && req.method === "POST") {
+      const body = (await req.json().catch(() => null)) as { identityToken?: string } | null;
+      if (!body?.identityToken) return Response.json({ error: "identityToken required" }, { status: 400 });
+      try {
+        const claims = await verifyAppleToken(body.identityToken, env.APPLE_AUDIENCE ?? "com.timwheeler.circle");
+        const session = await issueSession(claims.sub, env);
+        return Response.json({ session, user: claims.sub, email: claims.email ?? null });
+      } catch (e) {
+        return Response.json({ error: "sign in failed", detail: String(e) }, { status: 401 });
+      }
+    }
+
+    const bearer = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+
+    // Signed-in users: each gets their own end-to-end encrypted room.
+    const user = bearer.startsWith("v1.") ? await readSession(bearer, env) : null;
+    if (user) {
+      const room = env.SEALED.get(env.SEALED.idFromName("space:personal:" + user));
+      return room.fetch(req);
+    }
+
+    // Legacy plaintext room: kept only so a client can migrate off it and wipe it.
+    if (env.CIRCLE_TOKEN && bearer && timingSafeEqual(bearer, env.CIRCLE_TOKEN)) {
+      return env.ROOM.get(env.ROOM.idFromName("default")).fetch(req);
+    }
+    return new Response("unauthorized", { status: 401 });
   },
 } satisfies ExportedHandler<Env>;
+
+// MARK: auth
+
+type AppleClaims = { iss: string; aud: string; exp: number; sub: string; email?: string };
+
+let appleKeys: { at: number; keys: JsonWebKey[] } | null = null;
+
+async function appleJWKS(force = false): Promise<JsonWebKey[]> {
+  if (!force && appleKeys && Date.now() - appleKeys.at < 3600_000) return appleKeys.keys;
+  const r = await fetch("https://appleid.apple.com/auth/keys");
+  if (!r.ok) throw new Error("apple keys unavailable");
+  const j = (await r.json()) as { keys: JsonWebKey[] };
+  appleKeys = { at: Date.now(), keys: j.keys };
+  return j.keys;
+}
+
+/** Verifies an Apple identity token (RS256, Apple's published keys, issuer, audience, expiry). */
+export async function verifyAppleToken(token: string, audience: string): Promise<AppleClaims> {
+  const parts = token.split(".");
+  if (parts.length !== 3) throw new Error("malformed token");
+  const header = JSON.parse(b64urlText(parts[0])) as { kid?: string; alg?: string };
+  if (header.alg !== "RS256" || !header.kid) throw new Error("unexpected alg");
+  let jwk = (await appleJWKS()).find((k: any) => k.kid === header.kid);
+  if (!jwk) jwk = (await appleJWKS(true)).find((k: any) => k.kid === header.kid);
+  if (!jwk) throw new Error("unknown key");
+  const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+  const ok = await crypto.subtle.verify("RSASSA-PKCS1-v1_5", key, b64urlBytes(parts[2]),
+                                       new TextEncoder().encode(parts[0] + "." + parts[1]));
+  if (!ok) throw new Error("bad signature");
+  const c = JSON.parse(b64urlText(parts[1])) as AppleClaims;
+  if (c.iss !== "https://appleid.apple.com") throw new Error("bad issuer");
+  if (c.aud !== audience) throw new Error("bad audience");
+  if (!c.exp || c.exp * 1000 < Date.now()) throw new Error("expired");
+  if (!c.sub || typeof c.sub !== "string" || c.sub.length > 200) throw new Error("no subject");
+  return c;
+}
+
+/** "v1.<user>.<expiry>.<hmac>" — stateless, signed with SESSION_SECRET. */
+export async function issueSession(user: string, env: Env): Promise<string> {
+  const exp = Math.floor(Date.now() / 1000) + SESSION_DAYS * 86400;
+  const body = `v1.${b64urlEncode(new TextEncoder().encode(user))}.${exp}`;
+  return `${body}.${await hmac(body, env)}`;
+}
+
+export async function readSession(token: string, env: Env): Promise<string | null> {
+  if (!env.SESSION_SECRET) return null;
+  const parts = token.split(".");
+  if (parts.length !== 4 || parts[0] !== "v1") return null;
+  const body = parts.slice(0, 3).join(".");
+  if (!timingSafeEqual(await hmac(body, env), parts[3])) return null;
+  if (Number(parts[2]) * 1000 < Date.now()) return null;
+  try { return b64urlText(parts[1]); } catch { return null; }
+}
+
+async function hmac(body: string, env: Env): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(env.SESSION_SECRET),
+                                           { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return b64urlEncode(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body))));
+}
+
+function b64urlBytes(s: string): Uint8Array {
+  const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
+  return Uint8Array.from(b, (c) => c.charCodeAt(0));
+}
+function b64urlText(s: string): string { return new TextDecoder().decode(b64urlBytes(s)); }
+function b64urlEncode(b: Uint8Array): string {
+  let s = ""; for (const x of b) s += String.fromCharCode(x);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
 
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -46,7 +169,129 @@ function timingSafeEqual(a: string, b: string): boolean {
   return r === 0;
 }
 
-const COLS = "id,title,notes,done,sort,created_at,updated_at,deleted,origin,seq,kind,parent,done_at,remind_at,\"repeat\"";
+// MARK: sealed rooms (end-to-end encrypted)
+
+/** What the server stores per todo: merge metadata and an opaque, client-sealed blob. */
+type Sealed = { id: string; updated_at: number; origin: string; deleted: boolean; blob: string };
+
+export class SealedRoom extends DurableObject<Env> {
+  private sql: SqlStorage;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.sql = ctx.storage.sql;
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS rows(
+        id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL, origin TEXT NOT NULL,
+        deleted INTEGER NOT NULL, blob TEXT NOT NULL, seq INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS rows_seq ON rows(seq);
+      CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+    `);
+  }
+
+  async fetch(req: Request): Promise<Response> {
+    const url = new URL(req.url);
+    if (url.pathname === "/sync") {
+      if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("expected websocket", { status: 426 });
+      const pair = new WebSocketPair();
+      this.ctx.acceptWebSocket(pair[1]);
+      return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+    // The sealed key check: lets a device confirm it holds the account key. The server can't read it.
+    if (url.pathname === "/api/keycheck") {
+      if (req.method === "GET") {
+        const r = this.sql.exec("SELECT v FROM meta WHERE k='keycheck'").toArray();
+        return Response.json({ keycheck: r.length ? (r[0].v as string) : null });
+      }
+      if (req.method === "PUT") {
+        const body = (await req.json().catch(() => null)) as { keycheck?: string; replace?: boolean } | null;
+        if (!body?.keycheck || body.keycheck.length > 1000) return Response.json({ error: "keycheck required" }, { status: 400 });
+        const existing = this.sql.exec("SELECT v FROM meta WHERE k='keycheck'").toArray();
+        if (existing.length && !body.replace) return Response.json({ error: "exists" }, { status: 409 });
+        if (body.replace) this.sql.exec("DELETE FROM rows");   // a new key makes old blobs unreadable
+        this.sql.exec("INSERT OR REPLACE INTO meta(k,v) VALUES('keycheck',?)", body.keycheck);
+        return Response.json({ ok: true });
+      }
+    }
+    return new Response("not found", { status: 404 });
+  }
+
+  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    let msg: any;
+    try { msg = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message)); } catch { return; }
+    if (msg?.t === "hello") {
+      const rows = this.since(Number(msg.since) || 0);
+      for (let i = 0; i < rows.length; i += 500) {
+        const chunk = rows.slice(i, i + 500);
+        ws.send(JSON.stringify({ t: "rows", rows: chunk.map(stripSeq), cursor: chunk[chunk.length - 1].seq }));
+      }
+      if (rows.length === 0) ws.send(JSON.stringify({ t: "rows", rows: [], cursor: this.maxSeq() }));
+      return;
+    }
+    if (msg?.t === "push" && Array.isArray(msg.rows)) {
+      const incoming = (msg.rows as unknown[]).map(validSealed).filter((r): r is Sealed => r !== null);
+      const applied = this.apply(incoming);
+      ws.send(JSON.stringify({ t: "rows", rows: this.byIds(incoming.map((r) => r.id)).map(stripSeq), cursor: null }));
+      if (applied.length) {
+        const frame = JSON.stringify({ t: "rows", rows: applied.map(stripSeq), cursor: applied[applied.length - 1].seq });
+        for (const s of this.ctx.getWebSockets()) if (s !== ws) { try { s.send(frame); } catch {} }
+      }
+    }
+  }
+
+  async webSocketClose(ws: WebSocket, code: number, reason: string) { try { ws.close(code, reason); } catch {} }
+  async webSocketError(ws: WebSocket) { try { ws.close(1011, "error"); } catch {} }
+
+  private apply(rows: Sealed[]): (Sealed & { seq: number })[] {
+    const out: (Sealed & { seq: number })[] = [];
+    if (!rows.length) return out;
+    this.ctx.storage.transactionSync(() => {
+      let seq = this.maxSeq();
+      for (const r of rows) {
+        const next = seq + 1;
+        const cur = this.sql.exec(
+          `INSERT INTO rows(id,updated_at,origin,deleted,blob,seq) VALUES(?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at, origin=excluded.origin,
+             deleted=excluded.deleted, blob=excluded.blob, seq=excluded.seq
+           WHERE excluded.updated_at > rows.updated_at
+              OR (excluded.updated_at = rows.updated_at AND excluded.origin > rows.origin)`,
+          r.id, r.updated_at, r.origin, r.deleted ? 1 : 0, r.blob, next);
+        if (cur.rowsWritten > 0) { seq = next; out.push({ ...r, seq }); }
+      }
+    });
+    return out;
+  }
+
+  private maxSeq(): number { return (this.sql.exec("SELECT COALESCE(MAX(seq),0) AS s FROM rows").one().s as number) ?? 0; }
+  private since(s: number) { return this.sql.exec("SELECT * FROM rows WHERE seq > ? ORDER BY seq", s).toArray().map(sealedFromDB); }
+  private byIds(ids: string[]) {
+    return ids.flatMap((id) => this.sql.exec("SELECT * FROM rows WHERE id = ?", id).toArray().map(sealedFromDB));
+  }
+}
+
+function sealedFromDB(r: Record<string, SqlStorageValue>): Sealed & { seq: number } {
+  return { id: r.id as string, updated_at: r.updated_at as number, origin: r.origin as string,
+           deleted: (r.deleted as number) === 1, blob: r.blob as string, seq: r.seq as number };
+}
+
+function stripSeq<T extends { seq?: number }>(r: T): Omit<T, "seq"> {
+  const { seq: _s, ...rest } = r;
+  return rest;
+}
+
+function validSealed(x: unknown): Sealed | null {
+  if (!x || typeof x !== "object") return null;
+  const r = x as Record<string, unknown>;
+  if (typeof r.id !== "string" || !r.id.length || r.id.length > 64) return null;
+  if (typeof r.updated_at !== "number" || !Number.isFinite(r.updated_at)) return null;
+  if (typeof r.origin !== "string" || r.origin.length > 64) return null;
+  if (typeof r.deleted !== "boolean") return null;
+  if (typeof r.blob !== "string" || r.blob.length > 400_000) return null;
+  return { id: r.id, updated_at: Math.trunc(r.updated_at), origin: r.origin, deleted: r.deleted, blob: r.blob };
+}
+
+// MARK: legacy plaintext room (migration source only)
 
 export class SyncRoom extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -54,196 +299,21 @@ export class SyncRoom extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS todos(
-        id TEXT PRIMARY KEY, title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
-        done INTEGER NOT NULL, sort REAL NOT NULL, created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL, deleted INTEGER NOT NULL, origin TEXT NOT NULL,
-        seq INTEGER NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS todos_seq ON todos(seq);
-    `);
-    const cols = this.sql.exec("PRAGMA table_info(todos)").toArray().map((c) => c.name);
-    if (!cols.includes("kind")) this.sql.exec("ALTER TABLE todos ADD COLUMN kind TEXT NOT NULL DEFAULT 'todo'");
-    if (!cols.includes("parent")) this.sql.exec("ALTER TABLE todos ADD COLUMN parent TEXT NOT NULL DEFAULT ''");
-    if (!cols.includes("done_at")) this.sql.exec("ALTER TABLE todos ADD COLUMN done_at INTEGER NOT NULL DEFAULT 0");
-    if (!cols.includes("remind_at")) this.sql.exec("ALTER TABLE todos ADD COLUMN remind_at INTEGER NOT NULL DEFAULT 0");
-    if (!cols.includes("repeat")) this.sql.exec("ALTER TABLE todos ADD COLUMN \"repeat\" TEXT NOT NULL DEFAULT ''");
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS todos(id TEXT PRIMARY KEY, title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
+      done INTEGER NOT NULL, sort REAL NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+      deleted INTEGER NOT NULL, origin TEXT NOT NULL, seq INTEGER NOT NULL)`);
   }
 
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
-
-    if (url.pathname === "/sync") {
-      if (req.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-        return new Response("expected websocket", { status: 426 });
-      }
-      const pair = new WebSocketPair();
-      this.ctx.acceptWebSocket(pair[1]);
-      return new Response(null, { status: 101, webSocket: pair[0] });
+    // After a signed-in client has re-uploaded everything encrypted, it wipes the readable copy.
+    if (url.pathname === "/api/legacy/wipe" && req.method === "POST") {
+      const n = (this.sql.exec("SELECT COUNT(*) AS n FROM todos").one().n as number) ?? 0;
+      this.sql.exec("DELETE FROM todos");
+      for (const s of this.ctx.getWebSockets()) { try { s.close(1000, "moved"); } catch {} }
+      return Response.json({ wiped: n });
     }
-
-    // Small REST surface for future cloud agents / API clients.
-    if (url.pathname === "/api/todos" && req.method === "GET") {
-      const all = url.searchParams.get("all") === "1";
-      const rows = this.rowsSince(0).filter((r) => !r.deleted && (all || !r.done));
-      return Response.json(rows);
-    }
-    if (url.pathname === "/api/todos" && req.method === "POST") {
-      const body = (await req.json().catch(() => null)) as { title?: string; notes?: string; kind?: string; parent?: string } | null;
-      const title = body?.title?.trim();
-      if (!title) return Response.json({ error: "title required" }, { status: 400 });
-      const now = Date.now();
-      const minSort = (this.sql.exec("SELECT COALESCE(MIN(sort),0) AS m FROM todos WHERE deleted=0").one().m as number) ?? 0;
-      const row: Row = {
-        id: now.toString(16).padStart(11, "0") + crypto.getRandomValues(new Uint32Array(1))[0].toString(16).padStart(8, "0"),
-        kind: KINDS.includes(body?.kind as Kind) ? (body!.kind as Kind) : "todo",
-        parent: typeof body?.parent === "string" ? body.parent.slice(0, 64) : "",
-        done_at: 0, remind_at: 0, repeat: "",
-        title, notes: body?.notes ?? "", done: false, sort: minSort - 1,
-        created_at: now, updated_at: now, deleted: false, origin: "api",
-      };
-      const applied = this.apply([row]);
-      this.broadcast(applied, null);
-      return Response.json(applied[0] ?? row, { status: 201 });
-    }
-
+    if (url.pathname === "/sync") return new Response("this server now requires sign in", { status: 410 });
     return new Response("not found", { status: 404 });
   }
-
-  async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    let msg: any;
-    try {
-      msg = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message));
-    } catch {
-      return;
-    }
-    if (msg?.t === "hello") {
-      const since = Number(msg.since) || 0;
-      const rows = this.rowsSince(since);
-      // Chunk large backfills so frames stay small.
-      for (let i = 0; i < rows.length; i += 500) {
-        const chunk = rows.slice(i, i + 500);
-        ws.send(JSON.stringify({ t: "rows", rows: chunk.map(strip), cursor: chunk[chunk.length - 1].seq }));
-      }
-      if (rows.length === 0) ws.send(JSON.stringify({ t: "rows", rows: [], cursor: this.maxSeq() }));
-      return;
-    }
-    if (msg?.t === "push" && Array.isArray(msg.rows)) {
-      const incoming = (msg.rows as unknown[]).map(validate).filter((r): r is Row => r !== null);
-      const applied = this.apply(incoming);
-      // Echo the canonical version of every pushed id so the sender can clear
-      // its dirty flags (or adopt a newer server version it lost to).
-      const ids = incoming.map((r) => r.id);
-      const canonical = this.rowsByIds(ids);
-      ws.send(JSON.stringify({ t: "rows", rows: canonical.map(strip), cursor: null }));
-      this.broadcast(applied, ws);
-    }
-  }
-
-  async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
-    try { ws.close(code, reason); } catch {}
-  }
-
-  async webSocketError(ws: WebSocket): Promise<void> {
-    try { ws.close(1011, "error"); } catch {}
-  }
-
-  private apply(rows: Row[]): (Row & { seq: number })[] {
-    const applied: (Row & { seq: number })[] = [];
-    if (rows.length === 0) return applied;
-    this.ctx.storage.transactionSync(() => {
-      let seq = this.maxSeq();
-      for (const r of rows) {
-        const next = seq + 1;
-        const cur = this.sql.exec(
-          `INSERT INTO todos(${COLS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(id) DO UPDATE SET
-             kind=excluded.kind, parent=excluded.parent, done_at=excluded.done_at,
-             remind_at=excluded.remind_at, "repeat"=excluded."repeat", title=excluded.title, notes=excluded.notes, done=excluded.done, sort=excluded.sort,
-             updated_at=excluded.updated_at, deleted=excluded.deleted, origin=excluded.origin, seq=excluded.seq
-           WHERE excluded.updated_at > todos.updated_at
-              OR (excluded.updated_at = todos.updated_at AND excluded.origin > todos.origin)`,
-          r.id, r.title, r.notes, r.done ? 1 : 0, r.sort, r.created_at, r.updated_at, r.deleted ? 1 : 0, r.origin, next, r.kind, r.parent, r.done_at, r.remind_at, r.repeat,
-        );
-        if (cur.rowsWritten > 0) {
-          seq = next;
-          applied.push({ ...r, seq });
-        }
-      }
-    });
-    return applied;
-  }
-
-  private broadcast(rows: (Row & { seq: number })[], except: WebSocket | null) {
-    if (rows.length === 0) return;
-    const frame = JSON.stringify({ t: "rows", rows: rows.map(strip), cursor: rows[rows.length - 1].seq });
-    for (const s of this.ctx.getWebSockets()) {
-      if (s === except) continue;
-      try { s.send(frame); } catch {}
-    }
-  }
-
-  private maxSeq(): number {
-    return (this.sql.exec("SELECT COALESCE(MAX(seq),0) AS s FROM todos").one().s as number) ?? 0;
-  }
-
-  private rowsSince(since: number): (Row & { seq: number })[] {
-    return this.sql.exec(`SELECT ${COLS} FROM todos WHERE seq > ? ORDER BY seq`, since).toArray().map(fromDB);
-  }
-
-  private rowsByIds(ids: string[]): (Row & { seq: number })[] {
-    const out: (Row & { seq: number })[] = [];
-    for (const id of ids) {
-      const r = this.sql.exec(`SELECT ${COLS} FROM todos WHERE id = ?`, id).toArray();
-      if (r.length) out.push(fromDB(r[0]));
-    }
-    return out;
-  }
-}
-
-function fromDB(r: Record<string, SqlStorageValue>): Row & { seq: number } {
-  return {
-    id: r.id as string,
-    kind: (KINDS.includes(r.kind as Kind) ? r.kind : "todo") as Kind,
-    parent: (r.parent as string) ?? "",
-    done_at: (r.done_at as number) ?? 0,
-    remind_at: (r.remind_at as number) ?? 0,
-    repeat: (r.repeat as string) ?? "",
-    title: r.title as string,
-    notes: r.notes as string,
-    done: (r.done as number) === 1,
-    sort: r.sort as number,
-    created_at: r.created_at as number,
-    updated_at: r.updated_at as number,
-    deleted: (r.deleted as number) === 1,
-    origin: r.origin as string,
-    seq: r.seq as number,
-  };
-}
-
-function strip(r: Row & { seq?: number }): Row {
-  const { seq: _seq, ...rest } = r;
-  return rest;
-}
-
-function validate(x: unknown): Row | null {
-  if (!x || typeof x !== "object") return null;
-  const r = x as Record<string, unknown>;
-  const str = (v: unknown, max: number) => typeof v === "string" && v.length <= max;
-  const num = (v: unknown) => typeof v === "number" && Number.isFinite(v);
-  if (!str(r.id, 64) || !(r.id as string).length || !str(r.title, 10_000) || !str(r.origin, 64)) return null;
-  if (!num(r.sort) || !num(r.created_at) || !num(r.updated_at)) return null;
-  if (typeof r.done !== "boolean" || typeof r.deleted !== "boolean") return null;
-  const notes = typeof r.notes === "string" ? r.notes.slice(0, 100_000) : "";
-  const kind: Kind = KINDS.includes(r.kind as Kind) ? (r.kind as Kind) : "todo";
-  return {
-    id: r.id as string, kind, parent: typeof r.parent === "string" && r.parent.length <= 64 ? r.parent : "",
-    done_at: typeof r.done_at === "number" && Number.isFinite(r.done_at) ? Math.trunc(r.done_at) : 0,
-    remind_at: typeof r.remind_at === "number" && Number.isFinite(r.remind_at) ? Math.trunc(r.remind_at) : 0,
-    repeat: typeof r.repeat === "string" && r.repeat.length <= 32 ? r.repeat : "",
-    title: r.title as string, notes, done: r.done, sort: r.sort as number,
-    created_at: Math.trunc(r.created_at as number), updated_at: Math.trunc(r.updated_at as number),
-    deleted: r.deleted, origin: r.origin as string,
-  };
 }

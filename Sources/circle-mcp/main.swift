@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import CircleCore
 
 // Minimal MCP server over stdio (newline-delimited JSON-RPC 2.0).
@@ -8,6 +9,101 @@ import CircleCore
 setvbuf(stdout, nil, _IOLBF, 0)
 
 // `circle-mcp --when "fri 2pm every week"` prints how a reminder phrase parses.
+// Self-test of the end-to-end encryption (run by build/test-vault.command).
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--vault-selftest" {
+    func check(_ ok: Bool, _ what: String) { print((ok ? "ok   " : "FAIL ") + what); if !ok { exit(1) } }
+    let v = Vault.generate()
+    var t = Todo(kind: .agent, parent: "p1", title: "secret plan [[x]]", notes: "notes ✓", sort: 3.5, origin: "mac1",
+                 remindAt: 1_800_000_000_000, repeatRule: "weekdays")
+    t.setDone(true)
+    let row = try! v.seal(t)
+    check(!row.blob.contains("secret") && !row.blob.contains("plan"), "blob doesn't contain the plaintext")
+    let back = try! v.open(row)
+    check(back == t, "seal → open round-trips every field")
+    var moved = row; moved.id = "other"
+    check((try? v.open(moved)) == nil, "a blob moved to another id is rejected")
+    let other = Vault.generate()
+    check((try? other.open(row)) == nil, "another account's key can't open it")
+    let rk = v.recoveryKey
+    check(rk.count == 64 && rk.split(separator: "-").count == 13, "recovery key is 13 groups of 4 (\(rk.prefix(9))…)")
+    let restored = Vault(recoveryKey: rk.lowercased().replacingOccurrences(of: "-", with: " "))
+    check(restored.map { (try? $0.open(row)) == t } == true, "recovery key (any case, spaces) restores the key")
+    check(Vault(recoveryKey: "nope") == nil, "garbage recovery key refused")
+    let kc = try! v.keyCheck()
+    check(v.verify(keyCheck: kc) && !other.verify(keyCheck: kc), "key check accepts the right key only")
+    print("VAULT_SELFTEST_OK")
+    exit(0)
+}
+
+// End-to-end: the app's sealing against the real server code (a local `wrangler dev`).
+// circle-mcp --sync-selftest <base-url> <session-secret>
+if CommandLine.arguments.count >= 4, CommandLine.arguments[1] == "--sync-selftest" {
+    let base = CommandLine.arguments[2], secret = CommandLine.arguments[3]
+    func check(_ ok: Bool, _ what: String) { print((ok ? "ok   " : "FAIL ") + what); if !ok { exit(1) } }
+    func b64url(_ d: Data) -> String {
+        d.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+    }
+    func session(_ user: String) -> String {
+        let body = "v1.\(b64url(Data(user.utf8))).\(Int(Date().timeIntervalSince1970) + 3600)"
+        let mac = HMAC<SHA256>.authenticationCode(for: Data(body.utf8), using: SymmetricKey(data: Data(secret.utf8)))
+        return body + "." + b64url(Data(mac))
+    }
+    let sem = DispatchSemaphore(value: 0)
+    Task {
+        do {
+            let user = "selftest-\(UUID().uuidString.prefix(8))"
+            let tok = session(user)
+            let vault = Vault.generate()
+            // key check round trip
+            var put = URLRequest(url: URL(string: base + "/api/keycheck")!)
+            put.httpMethod = "PUT"; put.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+            put.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            put.httpBody = try JSONSerialization.data(withJSONObject: ["keycheck": try vault.keyCheck()])
+            let (_, pr) = try await URLSession.shared.data(for: put)
+            check((pr as? HTTPURLResponse)?.statusCode == 200, "key check stored")
+            var get = URLRequest(url: URL(string: base + "/api/keycheck")!)
+            get.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+            let (gd, _) = try await URLSession.shared.data(for: get)
+            let kc = (try JSONSerialization.jsonObject(with: gd) as? [String: Any])?["keycheck"] as? String
+            check(kc.map { vault.verify(keyCheck: $0) } == true, "key check verifies with the account key")
+            check(kc.map { Vault.generate().verify(keyCheck: $0) } == false, "key check rejects a different key")
+
+            func socket() -> URLSessionWebSocketTask {
+                var r = URLRequest(url: URL(string: base.replacingOccurrences(of: "http", with: "ws") + "/sync")!)
+                r.setValue("Bearer \(tok)", forHTTPHeaderField: "Authorization")
+                let t = URLSession.shared.webSocketTask(with: r); t.resume(); return t
+            }
+            struct Frame: Decodable { let t: String; let rows: [SealedRow]?; let cursor: Int64? }
+            func next(_ t: URLSessionWebSocketTask) async throws -> Frame {
+                let m = try await t.receive()
+                guard case .string(let s) = m else { throw VaultError.corrupt }
+                return try JSONDecoder().decode(Frame.self, from: Data(s.utf8))
+            }
+            let a = socket(), b = socket()
+            try await a.send(.string("{\"t\":\"hello\",\"since\":0}")); _ = try await next(a)
+            try await b.send(.string("{\"t\":\"hello\",\"since\":0}")); _ = try await next(b)
+
+            let todos = (0..<3).map { i in Todo(kind: i == 1 ? .agent : .mine, parent: "", title: "secret \(i) [[link]]", notes: "n\(i)", sort: Double(i), origin: "macA") }
+            let sealed = try todos.map { try vault.seal($0) }
+            let push = String(data: try JSONEncoder().encode(sealed), encoding: .utf8)!
+            try await a.send(.string("{\"t\":\"push\",\"rows\":\(push)}"))
+            let echo = try await next(a)
+            check(echo.rows?.count == 3, "server echoes all 3 sealed rows")
+            let got = try await next(b)
+            let opened = try (got.rows ?? []).map { try vault.open($0) }.sorted { $0.sort < $1.sort }
+            check(opened == todos, "second device receives and decrypts identical todos")
+            check(!(got.rows ?? []).contains { $0.blob.contains("secret") }, "server only ever relays ciphertext")
+            a.cancel(); b.cancel()
+            print("SYNC_SELFTEST_OK")
+            sem.signal()
+        } catch {
+            print("FAIL \(error)"); exit(1)
+        }
+    }
+    sem.wait()
+    exit(0)
+}
+
 if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--when" {
     for phrase in CommandLine.arguments.dropFirst(2) {
         if let p = When.parse(phrase) {

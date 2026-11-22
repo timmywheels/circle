@@ -125,6 +125,12 @@ public final class TodoRepo: @unchecked Sendable {
         return applied
     }
 
+    /// Everything goes up again (switching to an encrypted room starts from an empty server).
+    public func markAllDirty() throws {
+        _ = try db.run("UPDATE todos SET dirty=1 WHERE title <> '' OR deleted = 1")
+        try setMeta("cursor", "0")
+    }
+
     public func dirty(limit: Int = 500) throws -> [Todo] {
         var out: [Todo] = []
         try db.query("SELECT \(Self.cols) FROM todos WHERE dirty=1 LIMIT ?", [.int(Int64(limit))]) { out.append(decode($0)) }

@@ -35,7 +35,13 @@ echo "icon: $ICON_NAME"; grep -iE "error|warning" build/actool.log | head -5 || 
 IDENTITY="${SIGNING_IDENTITY:-}"
 if [ -n "$IDENTITY" ] && security find-identity -v -p codesigning | grep -qF "$IDENTITY"; then
   codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP/Contents/MacOS/circle-mcp"
-  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+  # With the provisioning profile, the app gets its keychain group (iCloud Keychain sync for the account key).
+  if [ -f Resources/Circle.provisionprofile ]; then
+    cp Resources/Circle.provisionprofile "$APP/Contents/embedded.provisionprofile"
+    codesign --force --options runtime --timestamp --entitlements Resources/Circle.entitlements --sign "$IDENTITY" "$APP"
+  else
+    codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+  fi
   codesign --verify --strict --verbose=2 "$APP"
 else
   echo "Developer ID not found, signing ad-hoc"

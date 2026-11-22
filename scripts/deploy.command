@@ -31,11 +31,26 @@ TOKEN=""
 if [ -f "$CFG" ]; then TOKEN=$(/usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("token",""))' "$CFG" 2>/dev/null || true); fi
 if [ -z "$TOKEN" ]; then TOKEN=$(openssl rand -hex 32); fi
 printf '%s' "$TOKEN" | npx wrangler secret put CIRCLE_TOKEN
+# Signs session tokens after Sign in with Apple. Made once; rotating it signs everyone out.
+if ! npx wrangler secret list 2>/dev/null | grep -q SESSION_SECRET; then
+  openssl rand -hex 32 | tr -d '\n' | npx wrangler secret put SESSION_SECRET
+fi
 
-/usr/bin/python3 -c 'import json,sys;json.dump({"url":sys.argv[1],"token":sys.argv[2]},open(sys.argv[3],"w"))' "$URL" "$TOKEN" "$CFG"
+# Merge into sync.json so a signed-in account (user/email) survives a redeploy.
+/usr/bin/python3 - "$URL" "$TOKEN" "$CFG" <<'PY'
+import json, os, sys
+url, token, path = sys.argv[1:4]
+cfg = {}
+if os.path.exists(path):
+    try: cfg = json.load(open(path))
+    except Exception: cfg = {}
+cfg["url"] = url
+cfg["token"] = token
+json.dump(cfg, open(path, "w"))
+PY
 chmod 600 "$CFG"
 sleep 2
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$URL/api/todos")
+code=$(curl -s -o /dev/null -w '%{http_code}' "$URL/health")
 echo "health: $code (200 expected)"
 echo "DEPLOY_OK $URL"
 echo "Restart Circle to connect. On another Mac, copy $CFG to the same path."

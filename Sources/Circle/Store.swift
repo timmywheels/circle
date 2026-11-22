@@ -640,6 +640,15 @@ final class Store {
 
     // MARK: sync plumbing (called by SyncClient)
 
+    /// First sync into an encrypted room: re-upload every todo (sealed) and read the room from the start.
+    func prepareForEncryptedSync() {
+        let repo = repo
+        let key = "encrypted-upload:" + (SyncConfig.load()?.user ?? "")
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        q.sync { try? repo.markAllDirty() }
+    }
+
     func pendingRows(_ done: @escaping ([Todo]) -> Void) {
         let repo = repo
         q.async { let rows = (try? repo.dirty()) ?? []; DispatchQueue.main.async { done(rows) } }

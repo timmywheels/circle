@@ -20,6 +20,7 @@ struct CircleApp: App {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { Settings.shared.open() }.keyboardShortcut(",")
                 Button("Keymap…") { app.keymap.openFile() }
+                Button("Sync & Account…") { app.accountOpen = true }
             }
             CommandGroup(replacing: .newItem) {
                 Button("New Todo") { app.focusInput(top: true) }.keyboardShortcut("n")
@@ -51,6 +52,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var shared: AppDelegate?
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        // Diagnostics: can this build put a synced (iCloud Keychain) item in the keychain?
+        if CommandLine.arguments.contains("--keychain-selftest") {
+            let account = "selftest-\(UUID().uuidString)"
+            let place = Secrets.save(Data("ok".utf8), account: account, synced: true)
+            let readBack = Secrets.load(account: account).flatMap { String(data: $0, encoding: .utf8) }
+            Secrets.delete(account: account)
+            let gone = Secrets.load(account: account) == nil
+            let line = "saved=\(place.map { "\($0)" } ?? "nil") read=\(readBack ?? "nil") deleted=\(gone)\n"
+            let out = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("dev/lab/circle/build/keychain.txt")
+            try? line.write(to: out, atomically: true, encoding: .utf8)
+            exit(0)
+        }
         AppDelegate.shared = self
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -107,6 +120,9 @@ final class AppModel {
     let keymap = Keymap()
     @ObservationIgnored let sync: SyncClient
     @ObservationIgnored var reminders: Reminders?
+    /// Sign in with Apple + the end-to-end encryption key.
+    var account: Account!
+    var accountOpen = false
     /// Where `back` (⌘[) returns to after following links.
     @ObservationIgnored var history: [String] = []
 
@@ -116,6 +132,8 @@ final class AppModel {
         registry = r
         runner = AgentRunner(store: s, registry: r)
         sync = SyncClient(store: s)
+        account = Account(app: self)
+        sync.account = account
     }
 
     var focusRequest: Field? = .input

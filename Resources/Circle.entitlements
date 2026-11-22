@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Matches Resources/Circle.provisionprofile (Developer ID, team S3RY6Q3EW2).
+       The keychain group is what lets the account key sync through iCloud Keychain. -->
+  <key>com.apple.application-identifier</key>
+  <string>S3RY6Q3EW2.com.timwheeler.circle</string>
+  <key>com.apple.developer.team-identifier</key>
+  <string>S3RY6Q3EW2</string>
+  <key>keychain-access-groups</key>
+  <array>
+    <string>S3RY6Q3EW2.com.timwheeler.circle</string>
+  </array>
+</dict>
+</plist>
