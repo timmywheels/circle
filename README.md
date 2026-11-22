@@ -18,6 +18,11 @@ A native macOS todo list that feels like a text editor. Local-first, end-to-end 
 
 The Sign in with Apple web flow uses the Services ID `com.timwheeler.circle.signin` (return URL `https://circle-sync.timwheeler.workers.dev/auth/apple/callback`). `Resources/Circle.provisionprofile` (Developer ID) gives the app its keychain group for iCloud Keychain.
 
+## iPhone
+
+`mobile/` is the phone app (Expo, React Native): same sign-in and encrypted sync, built with EAS for
+TestFlight and updated over the air. See `mobile/README.md`.
+
 ## Shapes
 
 The shape says who a todo is waiting on. Filled in means done.

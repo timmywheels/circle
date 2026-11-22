@@ -10,6 +10,22 @@ setvbuf(stdout, nil, _IOLBF, 0)
 
 // `circle-mcp --when "fri 2pm every week"` prints how a reminder phrase parses.
 // Self-test of the end-to-end encryption (run by build/test-vault.command).
+// `circle-mcp --vault-interop in.json out.json`: opens a row sealed by the phone app (fixed test key
+// 1...32) and seals one for it, so both implementations are checked against each other.
+if CommandLine.arguments.count >= 4, CommandLine.arguments[1] == "--vault-interop" {
+    struct Pack: Codable { let row: SealedRow; let keycheck: String }
+    let v = Vault(key: SymmetricKey(data: (1...32).map { UInt8($0) }))
+    let pack = try! JSONDecoder().decode(Pack.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])))
+    let t = try! v.open(pack.row)
+    print("JS_ROW_OPENED kind=\(t.kind.rawValue) title=\(t.title) notes=\(t.notes.debugDescription) sort=\(t.sort) remindAt=\(t.remindAt) origin=\(t.origin)")
+    print("JS_KEYCHECK \(v.verify(keyCheck: pack.keycheck))")
+    print("RECOVERY \(v.recoveryKey)")
+    let mine = Todo(kind: .agent, parent: "p1", title: "from the mac ✓", notes: "n", sort: 2.5, origin: "mac1", remindAt: 1_800_000_000_000, repeatRule: "weekdays")
+    let out = Pack(row: try! v.seal(mine), keycheck: try! v.keyCheck())
+    try! JSONEncoder().encode(out).write(to: URL(fileURLWithPath: CommandLine.arguments[3]))
+    exit(0)
+}
+
 if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--vault-selftest" {
     func check(_ ok: Bool, _ what: String) { print((ok ? "ok   " : "FAIL ") + what); if !ok { exit(1) } }
     let v = Vault.generate()

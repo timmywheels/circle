@@ -123,7 +123,8 @@ export async function verifyAppleToken(token: string, audience: string): Promise
   if (!ok) throw new Error("bad signature");
   const c = JSON.parse(b64urlText(parts[1])) as AppleClaims;
   if (c.iss !== "https://appleid.apple.com") throw new Error("bad issuer");
-  if (c.aud !== audience) throw new Error("bad audience");
+  // `audience` may list several app ids (Mac app, iPhone app), comma separated.
+  if (!audience.split(",").map((a) => a.trim()).includes(c.aud)) throw new Error("bad audience");
   if (!c.exp || c.exp * 1000 < Date.now()) throw new Error("expired");
   if (!c.sub || typeof c.sub !== "string" || c.sub.length > 200) throw new Error("no subject");
   return c;
