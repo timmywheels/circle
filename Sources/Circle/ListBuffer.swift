@@ -505,11 +505,8 @@ final class BufferController: NSObject, NSTextViewDelegate {
     /// The caret left a line: blank lines go away, renamed ones fix links pointing at them.
     private func left(_ id: String, titleWas: String) {
         guard let t = store.todo(id), !t.deleted, id != caretID else { return }
-        // Only a line that is nothing but an empty title goes away on its own.
-        if Store.isBlank(t.title) && t.notes.isEmpty && t.remindAt == 0 && !store.hasChildren(id) && app.runner.run(for: id) == nil {
-            store.removeLine(id, undoable: false)
-            render(force: true)
-        } else if t.title != titleWas {
+        // Empty lines stay (spacing, like any buffer); they are never saved, so they don't linger.
+        if t.title != titleWas {
             store.rewriteLinks(id, from: titleWas)
         }
     }

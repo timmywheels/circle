@@ -79,7 +79,7 @@ final class Store {
         var counts: [Kind: Int] = [:]
         var k: [String: [Todo]] = [:]
         for t in live {
-            if !t.done && !t.isSection { counts[t.kind, default: 0] += 1 }
+            if !t.done && !t.isSection && !Self.isBlank(t.title) { counts[t.kind, default: 0] += 1 }
             k[parentID(t), default: []].append(t)
         }
         for key in k.keys { k[key]!.sort(by: Self.order) }
