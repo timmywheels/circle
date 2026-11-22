@@ -391,7 +391,11 @@ final class Store {
     func insertLine(after prev: String?, title: String = "", firstChildIfOpen: Bool = true, undoable: Bool = true) -> Todo {
         var parent = "", sort: Double
         if let p = prev.flatMap({ byID[$0] }), !p.deleted {
-            if firstChildIfOpen && filter == nil && !logbook && !collapsed.contains(p.id), let first = kids[p.id]?.first {
+            // A new line under a section heading belongs to that section, even an empty or folded one.
+            if p.isSection && filter == nil && !logbook {
+                if collapsed.contains(p.id) { setCollapsed(p.id, false) }
+                parent = p.id; sort = (kids[p.id]?.first?.sort ?? 1) - 1
+            } else if firstChildIfOpen && filter == nil && !logbook && !collapsed.contains(p.id), let first = kids[p.id]?.first {
                 parent = p.id; sort = first.sort - 1
             } else {
                 parent = parentID(p); sort = sortAfter(p)
