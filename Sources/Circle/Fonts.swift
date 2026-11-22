@@ -6,8 +6,8 @@ extension Notification.Name {
 }
 
 /// One place that turns settings.json "font_family" / "font_weight" into fonts.
-/// Empty family = SF Mono (the system monospaced face). Any installed family or
-/// PostScript name works: "JetBrains Mono", "Berkeley Mono", "IBMPlexMono-Light".
+/// Empty family = the system UI font (SF Pro). "SF Mono" (or "mono") = the system monospaced face.
+/// Any installed family or PostScript name works: "JetBrains Mono", "Inter", "IBMPlexMono-Light".
 @MainActor
 enum Fonts {
     private static var cache: [String: NSFont] = [:]
@@ -39,10 +39,13 @@ enum Fonts {
 
     /// True when the family resolves to an installed font (used to warn about typos).
     static func exists(_ family: String) -> Bool {
-        family.isEmpty || NSFontManager.shared.availableMembers(ofFontFamily: family) != nil || NSFont(name: family, size: 12) != nil
+        ["", "system", "sf pro", "sf mono", "mono", "monospace"].contains(family.lowercased()) || NSFontManager.shared.availableMembers(ofFontFamily: family) != nil || NSFont(name: family, size: 12) != nil
     }
 
     private static func make(family: String, weight: String, size: CGFloat) -> NSFont {
+        let f = family.lowercased()
+        if f.isEmpty || f == "system" || f == "sf pro" { return NSFont.systemFont(ofSize: size, weight: systemWeight(weight)) }
+        if f == "sf mono" || f == "mono" || f == "monospace" { return NSFont.monospacedSystemFont(ofSize: size, weight: systemWeight(weight)) }
         if !family.isEmpty {
             if let members = NSFontManager.shared.availableMembers(ofFontFamily: family), !members.isEmpty {
                 // Pick the upright member whose weight is closest to the one asked for.
@@ -58,7 +61,7 @@ enum Fonts {
             }
             if let f = NSFont(name: family, size: size) { return f }   // a PostScript name
         }
-        return NSFont.monospacedSystemFont(ofSize: size, weight: systemWeight(weight))
+        return NSFont.systemFont(ofSize: size, weight: systemWeight(weight))
     }
 
     private static func systemWeight(_ w: String) -> NSFont.Weight {

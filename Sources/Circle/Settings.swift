@@ -10,7 +10,7 @@ final class Settings {
     static let shared = Settings()
 
     var fontSize: Double = 13.5 { didSet { changed() } }
-    /// Any installed font family or PostScript name; empty = SF Mono.
+    /// Any installed font family or PostScript name; empty = system font, "SF Mono" = monospaced.
     var fontFamily: String = "" { didSet { changed() } }
     /// ultralight, thin, light, regular, medium, semibold, bold, heavy.
     var fontWeight: String = "regular" { didSet { changed() } }
@@ -70,7 +70,7 @@ final class Settings {
         if let v = obj["font_size"] as? Double { fontSize = min(max(v, 9), 28) }
         if let v = obj["font_family"] as? String { fontFamily = v }
         if let v = obj["font_weight"] as? String { fontWeight = Fonts.weights.contains(v.lowercased()) ? v.lowercased() : "regular" }
-        if !Fonts.exists(fontFamily) { error = "font \"\(fontFamily)\" is not installed, using SF Mono" }
+        if !Fonts.exists(fontFamily) { error = "font \"\(fontFamily)\" is not installed, using the system font" }
         if let v = obj["agent"] as? String { agent = v }
         if let v = obj["model"] as? String { model = v }
         if let v = obj["autonomy"] as? String, Autonomy(rawValue: v) != nil { autonomy = v }
