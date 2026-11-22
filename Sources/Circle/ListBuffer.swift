@@ -916,8 +916,27 @@ final class BufferTextView: NSTextView {
         hoverArea = a
     }
 
+    /// Which cursor a point wants: nil means the text view's own I-beam.
+    private func handCursor(at p: NSPoint) -> NSCursor? {
+        guard let c = controller else { return nil }
+        return MainActor.assumeIsolated {
+            switch c.hit(p) {
+            case .glyph: return NSCursor.openHand
+            case .chevron: return NSCursor.pointingHand
+            default: return nil
+            }
+        }
+    }
+
+    // One owner for the cursor: over a handle we set it and skip NSTextView's I-beam entirely,
+    // instead of both fighting on every move (that was the jitter).
+    override func cursorUpdate(with e: NSEvent) {
+        if let h = handCursor(at: convert(e.locationInWindow, from: nil)) { h.set() } else { super.cursorUpdate(with: e) }
+    }
+
     override func mouseMoved(with e: NSEvent) {
-        super.mouseMoved(with: e)
+        let hand = handCursor(at: convert(e.locationInWindow, from: nil))
+        if let hand { hand.set() } else { super.mouseMoved(with: e) }
         guard let c = controller else { return }
         let p = convert(e.locationInWindow, from: nil)
         let (row, glyph, chevron): (String?, String?, Bool) = MainActor.assumeIsolated {
@@ -931,8 +950,7 @@ final class BufferTextView: NSTextView {
             default: return (row, nil, false)
             }
         }
-        // NSTextView sets the I-beam on every move, which beats cursor rects; set ours after it.
-        if glyph != nil { NSCursor.openHand.set() } else if chevron { NSCursor.pointingHand.set() }
+        _ = chevron
         if row != hoverRow || glyph != hoverGlyph {
             hoverRow = row; hoverGlyph = glyph
             needsDisplay = true
@@ -1123,12 +1141,9 @@ final class BufferTextView: NSTextView {
                     let gx = c.glyphX(depth: li.depth)
                     let x0 = li.hasKids ? gx - 2 : gx - 12
                     let grab = NSRect(x: x0, y: r.minY, width: c.textX(depth: li.depth, section: false) - 3 - x0, height: r.height)
-                    addCursorRect(grab, cursor: .openHand)
                     addToolTip(grab, owner: "Click to complete, drag to move" as NSString, userData: nil)
                 }
-                if li.hasKids {
-                    addCursorRect(NSRect(x: c.chevronX(depth: li.depth) - 4, y: r.minY, width: 14, height: r.height), cursor: .pointingHand)
-                }
+
             }
         }
     }
