@@ -122,6 +122,15 @@ final class Settings {
         try? d.write(to: Self.file, options: .atomic)
     }
 
+    static let defaultFontSize = 13.5
+
+    /// ⌘+ / ⌘- / ⌘0. Saved like any other setting, so it sticks.
+    func zoom(_ dir: Int) {
+        let next = dir == 0 ? Self.defaultFontSize : (fontSize + Double(dir)).rounded()
+        fontSize = min(max(next, 9), 28)
+        AppModel.shared.say("font \(fontSize.formatted()) pt")
+    }
+
     func open() {
         writeNowIfMissing()
         NSWorkspace.shared.open(Self.file)

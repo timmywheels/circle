@@ -25,6 +25,12 @@ struct CircleApp: App {
                 Button("New Todo") { app.focusInput(top: true) }.keyboardShortcut("n")
                 Button("New Section") { app.newSection() }.keyboardShortcut("n", modifiers: [.command, .shift])
             }
+            CommandGroup(before: .toolbar) {
+                Button("Bigger") { Settings.shared.zoom(1) }.keyboardShortcut("=")
+                Button("Smaller") { Settings.shared.zoom(-1) }.keyboardShortcut("-")
+                Button("Actual Size") { Settings.shared.zoom(0) }.keyboardShortcut("0")
+                Divider()
+            }
             CommandMenu("Go") {
                 // Menu shortcuts work even while typing in a field; list keys live in keymap.json.
                 Button("Command Palette") { app.paletteOpen.toggle() }.keyboardShortcut("k")
@@ -50,6 +56,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         MainActor.assumeIsolated { AppModel.shared.boot() }
         registerHotkey()
+        // ⌘+ typed with shift ("+") isn't the menu's ⌘= chord; treat it the same.
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if mods.contains(.command), !mods.contains(.control), !mods.contains(.option), e.charactersIgnoringModifiers == "+" {
+                MainActor.assumeIsolated { Settings.shared.zoom(1) }
+                return nil
+            }
+            return e
+        }
     }
 
     /// Summon chord from keymap.json ("global"), default ⌃⌥Space.
