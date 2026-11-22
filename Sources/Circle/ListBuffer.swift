@@ -461,6 +461,11 @@ final class BufferController: NSObject, NSTextViewDelegate {
     /// Reads the buffer back into todos: renamed lines, new lines, removed or joined lines.
     func reconcile() {
         guard let tv = textView, let ts = tv.textStorage else { return }
+        // Structural edits (lines removed, added, joined) are undone by the store as one group:
+        // text undo can't bring back hidden children or a todo's notes and nesting.
+        store.beginUndoGroup()
+        var structural = false
+        defer { store.endUndoGroup(keep: structural) }
         let ls = lines()
         // Where each id's characters ended up (a joined line leaves its chars on the line above),
         // and how many per line: the line holding most of a todo's text keeps that todo, so a split
@@ -479,7 +484,6 @@ final class BufferController: NSObject, NSTextViewDelegate {
         }
         var seen = Set<String>()
         var ids: [String] = []
-        var structural = false
         var prev: String?
         let s = ts.string as NSString
         for (i, l) in ls.enumerated() {
@@ -494,7 +498,7 @@ final class BufferController: NSObject, NSTextViewDelegate {
                     store.setTitle(x, text)
                 }
             } else {
-                let t = store.insertLine(after: prev, title: text, undoable: false)
+                let t = store.insertLine(after: prev, title: text)
                 seen.insert(t.id)
                 id = t.id
                 structural = true

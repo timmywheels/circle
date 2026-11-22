@@ -42,6 +42,20 @@ final class Store {
     @ObservationIgnored private var lastVersion: Int64 = 0
     @ObservationIgnored private var pollTimer: Timer?
     @ObservationIgnored private var undoStack: [[Todo]] = []
+    /// While open, every snapshot joins one group, so one ⌘Z undoes one whole edit
+    /// (e.g. deleting a section and its items in one keystroke). First snapshot per id wins.
+    @ObservationIgnored private var openGroup: [Todo]?
+    @ObservationIgnored private var groupIDs = Set<String>()
+
+    func beginUndoGroup() { openGroup = []; groupIDs = [] }
+
+    /// keep: false drops the group (an ordinary typing edit, which the text view undoes itself).
+    func endUndoGroup(keep: Bool) {
+        defer { openGroup = nil; groupIDs = [] }
+        guard keep, let g = openGroup, !g.isEmpty else { return }
+        undoStack.append(g)
+        if undoStack.count > 50 { undoStack.removeFirst() }
+    }
     /// Repeating todo -> the next occurrence created when it was checked off (this session).
     @ObservationIgnored private var successor: [String: String] = [:]
     @ObservationIgnored private var undoneRepeat: Set<String> = []
@@ -316,6 +330,10 @@ final class Store {
     }
 
     private func pushUndo(_ group: [Todo]) {
+        if openGroup != nil {
+            for t in group where groupIDs.insert(t.id).inserted { openGroup!.append(t) }
+            return
+        }
         undoStack.append(group)
         if undoStack.count > 50 { undoStack.removeFirst() }
     }
@@ -363,6 +381,7 @@ final class Store {
     /// Live title edit from the buffer: no trimming, blanks allowed, no link rewriting.
     func setTitle(_ id: String, _ title: String) {
         guard var t = byID[id], t.title != title else { return }
+        if openGroup != nil { pushUndo([t]) }   // a joined line changes its neighbor's title too
         t.title = title
         commit([t.touched(by: device)])
     }
