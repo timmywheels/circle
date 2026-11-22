@@ -35,7 +35,7 @@ struct ListBuffer: NSViewRepresentable {
         scroll.borderType = .noBorder
 
         let storage = NSTextStorage()
-        let lm = NSLayoutManager()
+        let lm = BufferLayoutManager()
         storage.addLayoutManager(lm)
         let tc = NSTextContainer(size: NSSize(width: 100, height: CGFloat.greatestFiniteMagnitude))
         tc.widthTracksTextView = true
@@ -78,6 +78,21 @@ struct ListBuffer: NSViewRepresentable {
             tv.setFrameSize(NSSize(width: scroll.contentSize.width, height: tv.frame.height))
         }
         context.coordinator.update(self, first: false)
+    }
+}
+
+/// TextKit sizes the empty last line from the typing attributes, which follow the caret: put the
+/// caret on a section and the bottom line jumped (section spacing and font). Lay it out as a
+/// plain todo line no matter where the caret is.
+final class BufferLayoutManager: NSLayoutManager {
+    var bodyFont: NSFont?
+    static let lineSpacing: CGFloat = 2
+
+    override func setExtraLineFragmentRect(_ r: NSRect, usedRect u: NSRect, textContainer c: NSTextContainer) {
+        guard let f = bodyFont, !r.isEmpty else { return super.setExtraLineFragmentRect(r, usedRect: u, textContainer: c) }
+        let h = defaultLineHeight(for: f) + Self.lineSpacing
+        super.setExtraLineFragmentRect(NSRect(x: r.minX, y: r.minY, width: r.width, height: h),
+                                       usedRect: NSRect(x: u.minX, y: r.minY, width: u.width, height: h), textContainer: c)
     }
 }
 
@@ -307,6 +322,7 @@ final class BufferController: NSObject, NSTextViewDelegate {
 
     func render(force: Bool) {
         guard let tv = textView, let ts = tv.textStorage else { return }
+        (tv.layoutManager as? BufferLayoutManager)?.bodyFont = font
         let sig = refreshInfo()
         let rows = store.ordered
         tailID = rows.last.flatMap { $0.title.isEmpty ? $0.id : nil }
@@ -791,8 +807,8 @@ final class BufferController: NSObject, NSTextViewDelegate {
         if l.range.location >= ts.length {
             let r = lm.extraLineFragmentRect
             guard !r.isEmpty else { return nil }
-            let before = (tv.typingAttributes[.paragraphStyle] as? NSParagraphStyle)?.paragraphSpacingBefore ?? 0
-            return r.minY + o.y + before + lm.defaultBaselineOffset(for: font)
+            // The empty last line is always laid out as a plain todo line (see BufferLayoutManager).
+            return r.minY + o.y + lm.defaultBaselineOffset(for: font)
         }
         let gi = lm.glyphIndexForCharacter(at: l.range.location)
         let frag = lm.lineFragmentRect(forGlyphAt: gi, effectiveRange: nil)
