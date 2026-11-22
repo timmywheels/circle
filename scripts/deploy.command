@@ -38,4 +38,4 @@ sleep 2
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$URL/api/todos")
 echo "health: $code (200 expected)"
 echo "DEPLOY_OK $URL"
-echo "In Circle: ⌘K → reconnect sync. On another Mac, copy $CFG to the same path."
+echo "Restart Circle to connect. On another Mac, copy $CFG to the same path."
