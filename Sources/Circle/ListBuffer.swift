@@ -920,14 +920,19 @@ final class BufferTextView: NSTextView {
         super.mouseMoved(with: e)
         guard let c = controller else { return }
         let p = convert(e.locationInWindow, from: nil)
-        let (row, glyph): (String?, String?) = MainActor.assumeIsolated {
+        let (row, glyph, chevron): (String?, String?, Bool) = MainActor.assumeIsolated {
             var row: String?
             for l in c.lines() {
                 if let id = l.id, let r = c.rect(for: l), p.y >= r.minY, p.y < r.maxY { row = id; break }
             }
-            if case .glyph(let id) = c.hit(p) { return (row, id) }
-            return (row, nil)
+            switch c.hit(p) {
+            case .glyph(let id): return (row, id, false)
+            case .chevron: return (row, nil, true)
+            default: return (row, nil, false)
+            }
         }
+        // NSTextView sets the I-beam on every move, which beats cursor rects; set ours after it.
+        if glyph != nil { NSCursor.openHand.set() } else if chevron { NSCursor.pointingHand.set() }
         if row != hoverRow || glyph != hoverGlyph {
             hoverRow = row; hoverGlyph = glyph
             needsDisplay = true
@@ -1143,7 +1148,7 @@ final class BufferTextView: NSTextView {
         let caretIdx = c.lineIndex(at: sel.location, in: ls)
 
         // Current line: a quiet band, stronger when the list has the keyboard.
-        if let i = caretIdx, (focused || c.app.panelOpen), sel.length == 0 || !(string as NSString).substring(with: sel).contains("\n"),
+        if c.app.draggingID == nil, let i = caretIdx, (focused || c.app.panelOpen), sel.length == 0 || !(string as NSString).substring(with: sel).contains("\n"),
            let r = c.band(for: ls[i]) {
             NSColor.labelColor.withAlphaComponent(focused ? 0.07 : 0.045).setFill()
             NSRect(x: 0, y: r.minY, width: bounds.width, height: r.height).fill()
@@ -1155,9 +1160,9 @@ final class BufferTextView: NSTextView {
             guard let id = l.id, let li = c.info[id], let r = c.rect(for: l) else { continue }
             guard r.maxY >= dirty.minY - 4, r.minY <= dirty.maxY + 4 else { continue }
             guard let base = c.baseline(for: l) else { continue }
-            if draggingID == id {
-                NSColor.labelColor.withAlphaComponent(0.05).setFill()
-                NSRect(x: 0, y: r.minY, width: bounds.width, height: r.height).fill()
+            if draggingID == id, let b = c.band(for: l) {
+                NSColor.labelColor.withAlphaComponent(0.07).setFill()
+                NSRect(x: 0, y: b.minY, width: bounds.width, height: b.height).fill()
             }
             if li.hasKids {
                 let chev = NSAttributedString(string: li.collapsed ? "▸" : "▾",
