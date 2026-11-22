@@ -730,21 +730,28 @@ final class BufferController: NSObject, NSTextViewDelegate {
         return out.isNull ? nil : out.offsetBy(dx: o.x, dy: o.y)
     }
 
-    /// The current-line band: tight to the text (first row's ascender to last row's descender)
-    /// with equal padding above and below, so it never looks off-center.
+    /// The current-line band: the same line box the caret is drawn in (first row to last row,
+    /// paragraph spacing excluded), padded equally above and below so the caret sits centered.
     func band(for l: Line) -> NSRect? {
-        guard let tv = textView, let lm = tv.layoutManager, let ts = tv.textStorage, let top = baseline(for: l) else { return nil }
-        let f = info[l.id ?? ""]?.todo.isSection == true ? sectionFont : font
-        var bottom = top
-        if l.range.length > 1, l.range.location + l.range.length <= ts.length {
-            let gi = lm.glyphIndexForCharacter(at: l.range.location + l.range.length - 1)
-            let frag = lm.lineFragmentRect(forGlyphAt: gi, effectiveRange: nil)
-            bottom = frag.minY + lm.location(forGlyphAt: gi).y + tv.textContainerOrigin.y
+        guard let tv = textView, let lm = tv.layoutManager, let ts = tv.textStorage else { return nil }
+        let o = tv.textContainerOrigin
+        let lineSpacing: CGFloat = 2
+        var top: CGFloat, bottom: CGFloat
+        if l.range.location >= ts.length {
+            let u = lm.extraLineFragmentUsedRect
+            guard !u.isEmpty else { return nil }
+            top = u.minY; bottom = u.maxY
+        } else {
+            let first = lm.glyphIndexForCharacter(at: l.range.location)
+            let lastChar = l.range.length > 0 ? l.range.location + l.range.length - 1 : l.range.location
+            let last = lm.glyphIndexForCharacter(at: min(lastChar, ts.length - 1))
+            top = lm.lineFragmentUsedRect(forGlyphAt: first, effectiveRange: nil).minY
+            bottom = lm.lineFragmentUsedRect(forGlyphAt: last, effectiveRange: nil).maxY
         }
-        let pad: CGFloat = 6
-        let y0 = top - f.ascender - pad
-        let y1 = bottom - f.descender + pad
-        return NSRect(x: 0, y: y0, width: tv.bounds.width, height: y1 - y0)
+        // The used rect carries the line spacing below the last row; leave it out so both sides match.
+        bottom -= lineSpacing
+        let pad: CGFloat = 5
+        return NSRect(x: 0, y: top + o.y - pad, width: tv.bounds.width, height: bottom - top + 2 * pad)
     }
 
     /// Baseline of a line's first row, in view coordinates.
