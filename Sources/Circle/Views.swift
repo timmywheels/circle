@@ -193,6 +193,7 @@ struct AgentPanel: View {
     @State private var notes = ""
     @State private var title = ""
     @State private var editingTitle = false
+    @State private var runOpen = false
 
     var body: some View {
         let todo = app.store.todo(todoID)
@@ -238,13 +239,24 @@ struct AgentPanel: View {
                     .onExitCommand { app.focusRequest = .list }
             }
             .font(Theme.font)
-            .frame(minHeight: 80, maxHeight: run == nil ? .infinity : 260)
+            .frame(minHeight: 80, maxHeight: showOutput ? 260 : .infinity)
             .padding(.horizontal, 11)
-            if todo?.isSection != true, run != nil {
+            // The agent bar: only on △ todos and todos that have a run. A finished run is dated
+            // and folded to one line, so an old run doesn't read as something happening now.
+            if todo?.isSection != true, run != nil || todo?.kind == .agent {
             Rectangle().fill(Theme.line).frame(height: 1).padding(.top, 6)
             HStack {
                 if let run {
-                    Text("\(run.agent) · \(run.model) · \(run.status.rawValue)")
+                    Button {
+                        if run.status != .running { runOpen.toggle() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if run.status != .running { Text(showOutput ? "▾" : "▸").foregroundStyle(Theme.faint) }
+                            Text("\(run.agent) · \(run.status.rawValue) · \(Self.when(run.startedAt))")
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 } else {
                     Text("not run yet")
                 }
@@ -253,6 +265,7 @@ struct AgentPanel: View {
             }
             .font(Theme.small).foregroundStyle(Theme.dim)
             .padding(.horizontal, 16).frame(height: 26)
+            if showOutput {
             Rectangle().fill(Theme.line).frame(height: 1)
             ScrollViewReader { proxy in
                 ScrollView {
@@ -264,6 +277,7 @@ struct AgentPanel: View {
                     Color.clear.frame(height: 1).id("bottom")
                 }
                 .onChange(of: run?.output.count ?? 0) { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
             }
             }
             if let t = todo { DetailsFooter(todo: t, focus: focus) }
@@ -286,7 +300,19 @@ struct AgentPanel: View {
         }
     }
 
+    /// Output shows while a run is live, or when a finished one is unfolded.
+    private var showOutput: Bool { app.runner.run(for: todoID).map { $0.status == .running || runOpen } ?? false }
+
+    static func when(_ ms: Int64) -> String {
+        let d = Date(timeIntervalSince1970: Double(ms) / 1000)
+        let time = d.formatted(date: .omitted, time: .shortened)
+        if Calendar.current.isDateInToday(d) { return time }
+        if Calendar.current.isDateInYesterday(d) { return "yesterday " + time }
+        return d.formatted(.dateTime.month(.abbreviated).day()) + " " + time
+    }
+
     private func load() {
+        runOpen = false
         editingTitle = false
         title = app.store.todo(todoID)?.title ?? ""
         notes = app.store.todo(todoID)?.notes ?? ""

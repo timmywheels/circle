@@ -10,7 +10,7 @@ final class AgentRun: Identifiable {
     let agent: String
     let model: String
     let cwd: String
-    let startedAt = Clock.now()
+    var startedAt = Clock.now()
     var endedAt: Int64?
     var status: Status = .running
     var output = ""
@@ -132,6 +132,7 @@ final class AgentRunner {
             r.status = AgentRun.Status(rawValue: rec.status) ?? .done
             if r.status == .running { r.status = .cancelled } // app quit mid-run
             r.output = rec.output
+            r.startedAt = rec.startedAt
             self.runs[todoID] = r
         }
     }

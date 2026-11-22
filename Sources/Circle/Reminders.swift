@@ -67,8 +67,8 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
             if fire < now && n > 0 && fire.addingTimeInterval(Double(minutes * 60)) < now { continue }
             let c = UNMutableNotificationContent()
             c.title = t.displayTitle.replacingOccurrences(of: "[[", with: "").replacingOccurrences(of: "]]", with: "")
-            let note = t.notes.split(separator: "\n").first.map(String.init) ?? ""
-            c.body = n == 0 ? (note.isEmpty ? "Circle" : note) : "still open · \(n * minutes) min"
+            // Title only: the notes may be an agent's hand-back, which read as a fresh reply.
+            c.body = n == 0 ? "" : "still open · \(n * minutes) min"
             c.sound = .default
             c.categoryIdentifier = Self.category
             c.threadIdentifier = t.id
