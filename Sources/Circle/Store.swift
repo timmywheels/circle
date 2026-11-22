@@ -166,9 +166,8 @@ final class Store {
         for t in ts { byID[t.id] = t }
         rebuild()
         let repo = repo
-        // A blank line in the buffer lives in memory only; it is saved once it has text.
-        let persist = ts.filter { $0.deleted || !Self.isBlank($0.title) }
-        guard !persist.isEmpty else { return }
+        // Blank lines are real rows (spacers): saved and synced, skipped by counts and agents.
+        let persist = ts
         q.async { [weak self] in
             try? repo.saveLocal(persist)
             let v = repo.dataVersion()

@@ -180,7 +180,7 @@ func call(_ name: String, _ a: [String: Any]) throws -> [String: Any] {
         let includeDone = a["include_done"] as? Bool ?? false
         let q = (a["query"] as? String)?.lowercased()
         let kind = (a["kind"] as? String).flatMap(Kind.init(rawValue:))
-        var items = try repo.all(includeDeleted: false).filter { (includeDone || !$0.done) && (kind == nil || $0.kind == kind) }
+        var items = try repo.all(includeDeleted: false).filter { !$0.title.trimmingCharacters(in: .whitespaces).isEmpty && (includeDone || !$0.done) && (kind == nil || $0.kind == kind) }
         if let q, !q.isEmpty { items = items.filter { $0.title.lowercased().contains(q) || $0.notes.lowercased().contains(q) } }
         // Render as an indented tree (children under their parent).
         let ids = Set(items.map(\.id))

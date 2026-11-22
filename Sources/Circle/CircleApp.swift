@@ -205,6 +205,10 @@ final class AppModel {
     /// A new blank line (top of the list, or under the current one) with the caret on it.
     func focusInput(top: Bool) {
         if compact { panelOpen = false }
+        // Already on a blank line: that line is the new todo, just type.
+        if !top, let s = store.selection, let cur = store.todo(s), !cur.isSection, Store.isBlank(cur.title) {
+            moveCaret(to: s, column: 0); return
+        }
         let t = store.insertLine(after: top ? nil : store.selection, title: "", firstChildIfOpen: !top)
         moveCaret(to: t.id, column: 0)
     }

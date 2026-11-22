@@ -827,7 +827,7 @@ final class BufferController: NSObject, NSTextViewDelegate {
             let gx = glyphX(depth: li.depth)
             if li.hasKids, p.x >= chevronX(depth: li.depth) - 4, p.x < gx - 2 { return .chevron(id) }
             // The whole gutter left of the title grabs the todo, not just the shape itself.
-            if !li.todo.isSection, p.x >= (li.hasKids ? gx - 2 : gx - 12), p.x < textX(depth: li.depth, section: false) - 3 { return .glyph(id) }
+            if !li.todo.isSection, !Store.isBlank(li.todo.title), p.x >= (li.hasKids ? gx - 2 : gx - 12), p.x < textX(depth: li.depth, section: false) - 3 { return .glyph(id) }
             if let m = li.meta, p.x > tv.bounds.width - 16 - m.size().width - 8 { return .meta(id) }
             if let lm = tv.layoutManager, let tc = tv.textContainer, let ts = tv.textStorage, ts.length > 0 {
                 let o = tv.textContainerOrigin
@@ -1163,7 +1163,7 @@ final class BufferTextView: NSTextView {
         MainActor.assumeIsolated {
             for l in c.lines() {
                 guard let id = l.id, let li = c.info[id], let r = c.rect(for: l) else { continue }
-                if !li.todo.isSection {
+                if !li.todo.isSection, !Store.isBlank(li.todo.title) {
                     let gx = c.glyphX(depth: li.depth)
                     let x0 = li.hasKids ? gx - 2 : gx - 12
                     let grab = NSRect(x: x0, y: r.minY, width: c.textX(depth: li.depth, section: false) - 3 - x0, height: r.height)
@@ -1210,7 +1210,14 @@ final class BufferTextView: NSTextView {
                                               attributes: [.font: c.smallFont, .foregroundColor: BufferController.faint])
                 chev.draw(at: NSPoint(x: c.chevronX(depth: li.depth), y: base - c.smallFont.ascender))
             }
-            if !li.todo.isSection {
+            // A blank line is space, not a todo: no shape, except a faint one under the caret
+            // to show that typing there makes a todo.
+            let blank = !li.todo.isSection && Store.isBlank(li.todo.title)
+            if blank, let ci = caretIdx, ls[ci].id == id, (focused || c.app.panelOpen) {
+                let g = NSAttributedString(string: li.todo.glyph, attributes: [.font: font, .foregroundColor: BufferController.faint])
+                g.draw(at: NSPoint(x: c.glyphX(depth: li.depth), y: base - font.ascender))
+            }
+            if !li.todo.isSection, !blank {
                 let hot = hoverGlyph == id || draggingID == id
                 let lifted = hoverRow == id && !li.todo.done
                 let color: NSColor = li.running ? Theme.nsAccent
