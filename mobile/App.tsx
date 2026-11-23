@@ -15,6 +15,9 @@ import { Sync, SyncState } from "./src/sync";
 import { Kind, Todo, displayTitle, glyph, isBlank, isSection } from "./src/model";
 import { formatWhen, quickTimes, syncReminders } from "./src/reminders";
 
+// Shown on the unlock screen so you can tell an over-the-air update arrived.
+const BUILD_LABEL = "v0.1.0 · update 2" + (Updates.updateId ? " · " + Updates.updateId.slice(0, 8) : "");
+
 // MARK: theme
 
 const MONO = Platform.select({ ios: "Menlo", default: "monospace" });
@@ -48,10 +51,16 @@ export default function App() {
 
   useEffect(() => { restore().then(setAcct, (e) => { setError(String(e.message ?? e)); setAcct({ kind: "signedOut" }); }); }, []);
 
+  const [busy, setBusy] = useState(false);
   const run = async (f: () => Promise<AccountState>) => {
-    setError(null);
-    try { setAcct(await f()); }
-    catch (e: any) { if (e?.code !== "ERR_REQUEST_CANCELED") setError(String(e?.message ?? e)); }
+    setError(null); setBusy(true);
+    try {
+      // Never hang silently: a slow network or a stuck call shows an error instead.
+      const timeout = new Promise<never>((_, no) => setTimeout(() => no(new Error("Timed out talking to the server. Check your connection and try again.")), 20000));
+      setAcct(await Promise.race([f(), timeout]));
+    } catch (e: any) {
+      if (e?.code !== "ERR_REQUEST_CANCELED") setError(String(e?.message ?? e));
+    } finally { setBusy(false); }
   };
 
   const leave = async () => {
@@ -66,7 +75,7 @@ export default function App() {
         {acct.kind === "loading" && <Center><ActivityIndicator color={p.dim} /></Center>}
         {acct.kind === "signedOut" && <SignIn p={p} error={error} onSignIn={() => run(signIn)} />}
         {acct.kind === "needsKey" && (
-          <Unlock p={p} error={error} onUnlock={(k) => run(() => unlock(acct, k))}
+          <Unlock p={p} error={error} busy={busy} onUnlock={(k) => run(() => unlock(acct, k))}
                   onRetry={() => run(() => setUpKey(acct))} onSignOut={leave} />
         )}
         {acct.kind === "newKey" && (
@@ -106,8 +115,8 @@ function SignIn({ p, error, onSignIn }: { p: Palette; error: string | null; onSi
   );
 }
 
-function Unlock({ p, error, onUnlock, onRetry, onSignOut }:
-  { p: Palette; error: string | null; onUnlock: (k: string) => void; onRetry: () => void; onSignOut: () => void }) {
+function Unlock({ p, error, busy, onUnlock, onRetry, onSignOut }:
+  { p: Palette; error: string | null; busy: boolean; onUnlock: (k: string) => void; onRetry: () => void; onSignOut: () => void }) {
   const [key, setKey] = useState("");
   return (
     <Center>
@@ -120,14 +129,16 @@ function Unlock({ p, error, onUnlock, onRetry, onSignOut }:
         autoCapitalize="characters" autoCorrect={false} multiline returnKeyType="done" submitBehavior="blurAndSubmit"
         onSubmitEditing={() => key.trim() && onUnlock(key)}
         style={[s.keyInput, { color: p.text, backgroundColor: p.fill }]} />
-      <Pressable onPress={() => { Keyboard.dismiss(); onUnlock(key); }} disabled={!key.trim()} style={[s.primary, { backgroundColor: p.text, opacity: key.trim() ? 1 : 0.4 }]}>
-        <Text style={[s.primaryText, { color: p.bg }]}>Unlock</Text>
+      {error && <Text style={[s.error, { color: p.accent, marginTop: 0, marginBottom: 14 }]}>{error}</Text>}
+      <Pressable onPress={() => { Keyboard.dismiss(); onUnlock(key); }} disabled={!key.trim() || busy}
+                 style={[s.primary, { backgroundColor: p.text, opacity: key.trim() && !busy ? 1 : 0.4 }]}>
+        <Text style={[s.primaryText, { color: p.bg }]}>{busy ? "Unlocking…" : "Unlock"}</Text>
       </Pressable>
       <View style={{ flexDirection: "row", gap: 24, marginTop: 18 }}>
         <Pressable onPress={onRetry}><Text style={{ color: p.dim }}>Check again</Text></Pressable>
         <Pressable onPress={onSignOut}><Text style={{ color: p.dim }}>Sign out</Text></Pressable>
       </View>
-      {error && <Text style={[s.error, { color: p.accent }]}>{error}</Text>}
+      <Text style={{ color: p.faint, fontSize: 11, marginTop: 28 }}>{BUILD_LABEL}</Text>
     </Center>
   );
 }
