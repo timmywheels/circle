@@ -17,6 +17,9 @@ struct CircleApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 640, height: 640)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { Updater.shared.check() }
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { Settings.shared.open() }.keyboardShortcut(",")
                 Button("Keymap…") { app.keymap.openFile() }
@@ -34,14 +37,18 @@ struct CircleApp: App {
             }
             CommandMenu("Vault") {
                 ForEach(Array(app.vaults.vaults.enumerated()), id: \.element.id) { i, v in
-                    Button((app.store.vault == v.id ? "✓ " : "    ") + v.name) { app.openVault(v.id) }
+                    Button((app.store.vault == v.id ? "✓ " : "    ") + v.name + (v.unlocked ? "" : "  (locked)")) { app.openVault(v.id) }
                         .keyboardShortcut(i < 9 ? KeyEquivalent(Character(String(i + 1))) : KeyEquivalent(" "),
                                           modifiers: i < 9 ? [.control] : [])
                 }
                 Divider()
                 Button("New Vault…") { app.newVault() }
+                Button("Unlock Vault with Code…") { app.unlockVault(nil) }
+                Button("Show Vault Code…") { app.showVaultCode() }.disabled(app.store.vault.isEmpty)
                 Button("Rename Vault…") { app.renameVault() }.disabled(app.store.vault.isEmpty)
-                Button("Remove Vault…") { app.removeVault() }.disabled(app.store.vault.isEmpty)
+                Divider()
+                Button("Lock Vault on This Mac…") { app.lockVault() }.disabled(app.store.vault.isEmpty)
+                Button("Delete Vault…") { app.deleteVault() }.disabled(app.store.vault.isEmpty)
             }
             CommandMenu("Go") {
                 // Menu shortcuts work even while typing in a field; list keys live in keymap.json.
@@ -63,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var shared: AppDelegate?
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        Updater.shared.start()
         // Diagnostics: can this build put a synced (iCloud Keychain) item in the keychain?
         if CommandLine.arguments.contains("--keychain-selftest") {
             let account = "selftest-\(UUID().uuidString)"
@@ -130,9 +138,8 @@ final class AppModel {
     let runner: AgentRunner
     let keymap = Keymap()
     @ObservationIgnored let sync: SyncClient
-    /// The list of vaults, and its own sync connection.
-    let vaults: VaultIndex
-    @ObservationIgnored let vaultSync: SyncClient
+    /// The account's vaults (directory from the server) and which are unlocked on this Mac.
+    let vaults = VaultIndex()
     @ObservationIgnored var reminders: Reminders?
     /// Sign in with Apple + the end-to-end encryption key.
     var account: Account!
@@ -146,12 +153,9 @@ final class AppModel {
         registry = r
         runner = AgentRunner(store: s, registry: r)
         sync = SyncClient(store: s)
-        let v = VaultIndex(device: s.device)
-        vaults = v
-        vaultSync = SyncClient(store: v)
         account = Account(app: self)
         sync.account = account
-        vaultSync.account = account
+        vaults.attach(account)
     }
 
     var focusRequest: Field? = .input
@@ -206,8 +210,9 @@ final class AppModel {
             store.autoArchive = settings.logbook != "never"
             say(settings.error ?? "settings reloaded")
         }
+        vaults.reload()
+        openUsableVault()
         sync.start()
-        vaultSync.start()
         registry.scan()
     }
 
@@ -215,8 +220,25 @@ final class AppModel {
 
     var vaultName: String { vaults.name(store.vault) }
 
+    /// After sign-in, unlock or lock: reconnect, and leave a vault this Mac can no longer open.
+    func vaultsChanged() {
+        vaults.reload()
+        openUsableVault()
+        sync.reload()
+    }
+
+    /// Keeps the open vault one this Mac can actually read (Personal needs the account key).
+    func openUsableVault() {
+        guard account.session != nil, !vaults.isUnlocked(store.vault) else { return }
+        if let first = vaults.unlocked.first { openVault(first.id) }
+    }
+
     func openVault(_ id: String) {
         guard id != store.vault else { return }
+        if account.session != nil, !vaults.isUnlocked(id) {
+            if id.isEmpty { accountOpen = true } else { unlockVault(id) }
+            return
+        }
         panelOpen = false; paletteOpen = false; history = []
         store.switchVault(id)
         sync.reload()
@@ -226,27 +248,83 @@ final class AppModel {
     }
 
     func newVault() {
-        guard let name = ask("New vault", detail: "A separate list with its own encryption key and sync.", value: "") ,
-              let id = vaults.create(name) else { return }
-        openVault(id)
+        guard account.session != nil else { accountOpen = true; return }
+        guard let name = ask("New vault", detail: "A separate list with its own encryption key. Other devices open it only with its code.", value: "") else { return }
+        Task {
+            do {
+                let (id, code) = try await vaults.create(name)
+                openVault(id)
+                showCode(code, title: "\(name) vault code",
+                         detail: "Save it in 1Password. Paste it on another device to open this vault there. It unlocks this vault and nothing else, and Circle can't recover it.")
+            } catch { alert("Couldn't create the vault", error.localizedDescription) }
+        }
+    }
+
+    func unlockVault(_ id: String?) {
+        guard account.session != nil else { accountOpen = true; return }
+        let label = id.map { vaults.name($0) } ?? "a vault"
+        guard let code = ask("Unlock \(label)", detail: "Paste the vault code (CV1-…).", value: "") else { return }
+        Task {
+            do { openVault(try await vaults.unlock(code: code, expecting: id)) }
+            catch { alert("Couldn't unlock", error.localizedDescription) }
+        }
+    }
+
+    func showVaultCode() {
+        guard let code = vaults.code(store.vault) else { return }
+        showCode(code, title: "\(vaultName) vault code", detail: "Paste it on another device to open this vault there.")
     }
 
     func renameVault() {
         let id = store.vault
         guard !id.isEmpty, let name = ask("Rename vault", detail: nil, value: vaultName) else { return }
-        vaults.rename(id, to: name)
+        Task { await vaults.rename(id, to: name) }
     }
 
-    func removeVault() {
+    func lockVault() {
         let id = store.vault
-        guard !id.isEmpty else { return }
+        guard !id.isEmpty, confirm("Lock \(vaultName) on this Mac?",
+                                   "Its key and local copy leave this Mac. Other devices keep it; you'll need the vault code to open it here again.",
+                                   button: "Lock") else { return }
+        leaveVault(id) { self.vaults.lock(id) }
+    }
+
+    func deleteVault() {
+        let id = store.vault
+        guard !id.isEmpty, confirm("Delete \(vaultName)?",
+                                   "It disappears from your vault list on every device, and this Mac forgets its key.",
+                                   button: "Delete") else { return }
+        leaveVault(id) { Task { await self.vaults.delete(id) } }
+    }
+
+    private func leaveVault(_ id: String, then: @escaping () -> Void) {
+        let fallback = vaults.unlocked.first { $0.id != id }?.id
+        if let fallback { openVault(fallback) }
+        then()
+        if fallback == nil { sync.reload() }
+    }
+
+    private func showCode(_ code: String, title: String, detail: String) {
         let a = NSAlert()
-        a.messageText = "Remove \(vaultName)?"
-        a.informativeText = "It disappears from the vault list on all your devices. Its items are kept on the server and on this Mac."
-        a.addButton(withTitle: "Remove"); a.addButton(withTitle: "Cancel")
-        guard a.runModal() == .alertFirstButtonReturn else { return }
-        openVault("")
-        vaults.remove(id)
+        a.messageText = title
+        a.informativeText = detail + "\n\n" + code
+        a.addButton(withTitle: "Copy Code"); a.addButton(withTitle: "Done")
+        if a.runModal() == .alertFirstButtonReturn {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(code, forType: .string)
+            say("vault code copied")
+        }
+    }
+
+    private func confirm(_ title: String, _ detail: String, button: String) -> Bool {
+        let a = NSAlert()
+        a.messageText = title; a.informativeText = detail
+        a.addButton(withTitle: button); a.addButton(withTitle: "Cancel")
+        return a.runModal() == .alertFirstButtonReturn
+    }
+
+    private func alert(_ title: String, _ detail: String) {
+        let a = NSAlert(); a.messageText = title; a.informativeText = detail; a.runModal()
     }
 
     private func ask(_ title: String, detail: String?, value: String) -> String? {

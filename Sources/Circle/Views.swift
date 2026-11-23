@@ -139,10 +139,11 @@ struct StatusLine: View {
             if app.vaults.vaults.count > 1 {
                 Menu {
                     ForEach(app.vaults.vaults) { v in
-                        Button((app.store.vault == v.id ? "✓ " : "") + v.name) { app.openVault(v.id) }
+                        Button((app.store.vault == v.id ? "✓ " : "") + v.name + (v.unlocked ? "" : "  (locked)")) { app.openVault(v.id) }
                     }
                     Divider()
                     Button("New Vault…") { app.newVault() }
+                    Button("Unlock Vault with Code…") { app.unlockVault(nil) }
                 } label: { Text(app.vaultName).foregroundStyle(Color.primary.opacity(0.75)) }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             }
@@ -162,7 +163,7 @@ struct StatusLine: View {
             Button { app.accountOpen = true } label: {
                 HStack(spacing: 5) {
                     Circle().fill(syncColor).frame(width: 6, height: 6)
-                    if !app.compact { Text(app.account.isReady ? app.store.syncState.label : "sign in to sync") }
+                    if !app.compact { Text(app.account.session != nil ? app.store.syncState.label : "sign in to sync") }
                 }
             }
             .buttonStyle(.plain)

@@ -38,5 +38,29 @@ grep -q "status: Accepted" build/notary-dmg.txt || { echo "RELEASE_FAILED (dmg)"
 xcrun stapler staple "$DMG"
 spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 rm -rf "$HOME/Applications/Circle.app"; cp -R "$APP" "$HOME/Applications/"
+# Sparkle appcast: the stapled zip, signed with the EdDSA key in this Mac's keychain.
+SPBIN=$(find .build/artifacts -type d -path "*Sparkle*/bin" | head -1)
+VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
+BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Resources/Info.plist)
+SIG=$("$SPBIN/sign_update" "$ZIP")
+[[ "$SIG" == *edSignature* ]] || { echo "RELEASE_FAILED (sign_update: run scripts/sparkle-keys.command first)"; exit 1; }
+cat > build/appcast.xml <<XML
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Circle</title>
+    <item>
+      <title>Circle $VERSION</title>
+      <pubDate>$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")</pubDate>
+      <sparkle:version>$BUILD</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/timmywheels/circle/releases/tag/v$VERSION</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/timmywheels/circle/releases/download/v$VERSION/Circle.zip" $SIG type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>
+XML
+echo "appcast: build/appcast.xml"
 echo "RELEASE_OK build/Circle.dmg build/Circle.zip"
 open "$HOME/Applications/Circle.app"

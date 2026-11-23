@@ -62,10 +62,10 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
     // MARK: styling
 
     private let label = NSColor.labelColor
-    private var body: NSColor { NSColor.labelColor.withAlphaComponent(0.72) }
-    private var dim: NSColor { NSColor.labelColor.withAlphaComponent(0.38) }
-    private var faint: NSColor { NSColor.labelColor.withAlphaComponent(0.22) }
-    private var codeBG: NSColor { NSColor.labelColor.withAlphaComponent(0.07) }
+    private var body: NSColor { NSColor.ink(0.72) }
+    private var dim: NSColor { NSColor.ink(0.38) }
+    private var faint: NSColor { NSColor.ink(0.22) }
+    private var codeBG: NSColor { NSColor.ink(0.07) }
 
     private static let heading = try! NSRegularExpression(pattern: #"^(#{1,6})\s+"#)
     private static let list = try! NSRegularExpression(pattern: #"^(\s*)([-*+]|\d{1,3}[.)])\s+(\[[ xX]\]\s+)?"#)
@@ -157,13 +157,13 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
         for m in Self.wiki.matches(in: line, range: lr) {
             let name = (line as NSString).substring(with: m.range(at: 1))
             ts.addAttributes([.foregroundColor: label, .underlineStyle: NSUnderlineStyle.single.rawValue,
-                              .underlineColor: NSColor.labelColor.withAlphaComponent(0.3), .circleLink: "wiki:" + name,
+                              .underlineColor: NSColor.ink(0.3), .circleLink: "wiki:" + name,
                               .cursor: NSCursor.pointingHand], range: abs(m.range(at: 1)))
             markers(m)
         }
         for m in Self.url.matches(in: line, range: lr) {
             let u = (line as NSString).substring(with: m.range)
-            ts.addAttributes([.foregroundColor: label, .underlineColor: NSColor.labelColor.withAlphaComponent(0.3), .circleLink: u,
+            ts.addAttributes([.foregroundColor: label, .underlineColor: NSColor.ink(0.3), .circleLink: u,
                               .underlineStyle: NSUnderlineStyle.single.rawValue, .cursor: NSCursor.pointingHand], range: abs(m.range))
         }
     }

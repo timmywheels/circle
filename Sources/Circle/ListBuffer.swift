@@ -170,8 +170,8 @@ final class BufferController: NSObject, NSTextViewDelegate {
     func chevronX(depth: Int) -> CGFloat { glyphX(depth: depth) - 14 }
 
     static let label = NSColor.labelColor
-    static var dim: NSColor { NSColor.labelColor.withAlphaComponent(0.38) }
-    static var faint: NSColor { NSColor.labelColor.withAlphaComponent(0.24) }
+    static let dim = NSColor.ink(0.38)
+    static let faint = NSColor.ink(0.24)
 
     // MARK: SwiftUI -> buffer
 
@@ -1245,7 +1245,7 @@ final class BufferTextView: NSTextView {
                 let color: NSColor = li.running ? Theme.nsAccent
                     : hot ? BufferController.label
                     : li.todo.done ? BufferController.faint
-                    : lifted ? NSColor.labelColor.withAlphaComponent(0.6) : BufferController.dim
+                    : lifted ? NSColor.ink(0.6) : BufferController.dim
                 let g = NSAttributedString(string: li.todo.glyph, attributes: [.font: font, .foregroundColor: color])
                 if hot {
                     // Center the handle on the shape's ink, whatever font it falls back to.
@@ -1283,6 +1283,19 @@ final class BufferTextView: NSTextView {
         if (textStorage?.length ?? 0) == 0 && c.renderedIDs.isEmpty {
             let s = NSAttributedString(string: c.placeholder, attributes: [.font: font, .foregroundColor: BufferController.faint])
             s.draw(at: NSPoint(x: c.textX(depth: 0, section: false), y: BufferController.topInset + 5))
+        }
+    }
+}
+
+
+extension NSColor {
+    /// labelColor at a given strength that follows light/dark. (labelColor.withAlphaComponent freezes
+    /// to the appearance current when it's called, so text stayed white after switching to light.)
+    static func ink(_ alpha: CGFloat) -> NSColor {
+        NSColor(name: nil) { a in
+            let dark = a.bestMatch(from: [.darkAqua, .aqua, .vibrantDark, .vibrantLight, .accessibilityHighContrastDarkAqua, .accessibilityHighContrastAqua]).map {
+                [.darkAqua, .vibrantDark, .accessibilityHighContrastDarkAqua].contains($0) } ?? false
+            return NSColor(white: dark ? 1 : 0, alpha: 0.85 * alpha)
         }
     }
 }

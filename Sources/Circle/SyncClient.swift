@@ -38,7 +38,8 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
 
     func start() {
         config = SyncConfig.load()
-        guard config?.socketURL != nil, account?.isReady == true else { config = nil; store?.setSyncState(.local); return }
+        // Personal needs the account key; a vault needs its own key. Either way, a session.
+        guard config?.socketURL != nil, account?.session != nil, vaultKey != nil else { config = nil; store?.setSyncState(.local); return }
         connect()
     }
 
@@ -158,8 +159,12 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
         }
     }
 
-    /// Each vault (and the vault list) has its own key, derived from the account key.
-    private var vaultKey: Vault? { store.flatMap { account?.vault?.forVault($0.vaultID) } }
+    /// Personal uses the account key; every other vault its own random key from this Mac's keychain.
+    private var vaultKey: Vault? {
+        guard let t = store, let acct = account else { return nil }
+        if t.vaultID.isEmpty { return acct.vault }
+        return acct.user.flatMap { Secrets.vaultKey(user: $0, id: t.vaultID) }
+    }
 
     private func send(_ obj: [String: Any]) {
         guard let d = try? JSONSerialization.data(withJSONObject: obj), let s = String(data: d, encoding: .utf8) else { return }

@@ -111,6 +111,22 @@ assert.equal(r.status, 400, "bad vault id refused");
 for (const c of [W, P, BW]) c.ws.close();
 console.log("✓ vaults are separate rooms");
 
+// 7c. vault directory: per account, names visible, create/rename/delete
+const api = (path, tok, init = {}) => fetch(`${BASE}${path}`, { ...init, headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" } });
+assert.deepEqual((await (await api("/api/vaults", alice)).json()).vaults, []);
+assert.equal((await api("/api/vaults", alice, { method: "POST", body: JSON.stringify({ id: "work", name: "Work" }) })).status, 200);
+assert.equal((await api("/api/vaults", alice, { method: "POST", body: JSON.stringify({ id: "work", name: "Again" }) })).status, 409, "duplicate id refused");
+assert.equal((await api("/api/vaults", alice, { method: "POST", body: JSON.stringify({ id: "Bad!", name: "x" }) })).status, 400);
+await api("/api/vaults/work", alice, { method: "PATCH", body: JSON.stringify({ name: "Work stuff" }) });
+let dir = (await (await api("/api/vaults", alice)).json()).vaults;
+assert.equal(dir.length, 1); assert.equal(dir[0].name, "Work stuff");
+assert.deepEqual((await (await api("/api/vaults", bob)).json()).vaults, [], "directories are per account");
+await api("/api/vaults/work", alice, { method: "DELETE" });
+assert.deepEqual((await (await api("/api/vaults", alice)).json()).vaults, []);
+r = await fetch(`${BASE}/api/keycheck?vault=work`, { headers: { Authorization: `Bearer ${alice}` } });
+assert.deepEqual(await r.json(), { keycheck: null }, "each vault room has its own key check");
+console.log("✓ vault directory");
+
 // 8. web sign-in start redirects to Apple with our Services ID
 r = await fetch(`${BASE}/auth/apple/start`, { redirect: "manual" });
 assert.equal(r.status, 302);

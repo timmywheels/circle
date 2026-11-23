@@ -82,9 +82,12 @@ export default {
     const user = bearer.startsWith("v1.") ? await readSession(bearer, env) : null;
     if (user) {
       // ?vault=<id> picks one of the user's vaults (its own room); none is the original Personal room.
-      const vault = new URL(req.url).searchParams.get("vault") ?? "";
+      const u = new URL(req.url);
+      const vault = u.searchParams.get("vault") ?? "";
       if (vault && !/^[a-z0-9_]{1,40}$/.test(vault)) return new Response("bad vault", { status: 400 });
-      const name = vault ? `space:vault:${user}:${vault}` : "space:personal:" + user;
+      // The account's vault directory (ids and names; contents live in each vault's own room).
+      const name = u.pathname.startsWith("/api/vaults") ? "space:dir:" + user
+        : vault ? `space:vault:${user}:${vault}` : "space:personal:" + user;
       const room = env.SEALED.get(env.SEALED.idFromName(name));
       return room.fetch(req);
     }
@@ -192,6 +195,9 @@ export class SealedRoom extends DurableObject<Env> {
       );
       CREATE INDEX IF NOT EXISTS rows_seq ON rows(seq);
       CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS vaults(
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
+      );
     `);
   }
 
@@ -218,6 +224,30 @@ export class SealedRoom extends DurableObject<Env> {
         this.sql.exec("INSERT OR REPLACE INTO meta(k,v) VALUES('keycheck',?)", body.keycheck);
         return Response.json({ ok: true });
       }
+    }
+    // Vault directory (only used in the account's "dir" room). Names are visible to the server by
+    // design (like Obsidian Sync); everything inside a vault is sealed with that vault's own key.
+    if (url.pathname === "/api/vaults" && req.method === "GET") {
+      const rows = this.sql.exec("SELECT id, name, created_at FROM vaults WHERE deleted = 0 ORDER BY created_at").toArray();
+      return Response.json({ vaults: rows });
+    }
+    if (url.pathname === "/api/vaults" && req.method === "POST") {
+      const b = (await req.json().catch(() => null)) as { id?: string; name?: string } | null;
+      if (!b?.id || !/^[a-z0-9_]{1,40}$/.test(b.id) || b.id === "_index" || !validName(b.name)) return Response.json({ error: "bad vault" }, { status: 400 });
+      if (this.sql.exec("SELECT 1 FROM vaults WHERE id = ?", b.id).toArray().length) return Response.json({ error: "exists" }, { status: 409 });
+      this.sql.exec("INSERT INTO vaults(id, name, created_at) VALUES(?, ?, ?)", b.id, b.name!.trim(), Date.now());
+      return Response.json({ ok: true });
+    }
+    const one = url.pathname.match(/^\/api\/vaults\/([a-z0-9_]{1,40})$/);
+    if (one && req.method === "PATCH") {
+      const b = (await req.json().catch(() => null)) as { name?: string } | null;
+      if (!validName(b?.name)) return Response.json({ error: "bad name" }, { status: 400 });
+      this.sql.exec("UPDATE vaults SET name = ? WHERE id = ? AND deleted = 0", b!.name!.trim(), one[1]);
+      return Response.json({ ok: true });
+    }
+    if (one && req.method === "DELETE") {
+      this.sql.exec("UPDATE vaults SET deleted = 1 WHERE id = ?", one[1]);
+      return Response.json({ ok: true });
     }
     return new Response("not found", { status: 404 });
   }
@@ -321,4 +351,8 @@ export class SyncRoom extends DurableObject<Env> {
     if (url.pathname === "/sync") return new Response("this server now requires sign in", { status: 410 });
     return new Response("not found", { status: 404 });
   }
+}
+
+function validName(n: unknown): n is string {
+  return typeof n === "string" && n.trim().length > 0 && n.length <= 80;
 }

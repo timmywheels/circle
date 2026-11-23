@@ -1,97 +1,151 @@
 import Foundation
+import CryptoKit
 import CircleCore
 
-/// The list of vaults, synced (encrypted) like any list: each vault is a row whose title is its name.
-/// Personal ("") is built in and always first.
+/// Your account's vaults, like Obsidian Sync: the server keeps the directory (ids and names, which it
+/// can see), and every vault's contents are sealed with that vault's own random key. A device opens a
+/// vault only once it holds the key (pasted as the vault code), so a work Mac holding Work's code can't
+/// read Personal or any other vault. Personal unlocks with the account recovery key.
 @MainActor @Observable
 final class VaultIndex {
-    struct Info: Identifiable, Equatable { let id: String; var name: String }
-
-    private(set) var vaults: [Info] = [Info(id: "", name: "Personal")]
-    var syncState: SyncState = .local
-
-    @ObservationIgnored private let repo: TodoRepo?
-    @ObservationIgnored private let q = DispatchQueue(label: "circle.vaults", qos: .userInitiated)
-    @ObservationIgnored private var rows: [String: Todo] = [:]
-    @ObservationIgnored private let device: String
-    @ObservationIgnored var onLocalChange: (() -> Void)?
-
-    init(device: String) {
-        self.device = device
-        repo = try? TodoRepo(vault: Vaults.index)
-        for t in (try? repo?.all()) ?? [] { rows[t.id] = t }
-        rebuild()
+    struct Info: Identifiable, Equatable, Codable {
+        let id: String
+        var name: String
+        var unlocked = false
     }
 
-    func name(_ id: String) -> String { vaults.first { $0.id == id }?.name ?? "Personal" }
+    private(set) var vaults: [Info] = []
+    var unlocked: [Info] { vaults.filter(\.unlocked) }
+    var error: String?
 
-    private func rebuild() {
-        let named = rows.values.filter { !$0.deleted && Vaults.isValidID($0.id) && !$0.id.isEmpty }
-            .sorted { $0.sort != $1.sort ? $0.sort < $1.sort : $0.createdAt < $1.createdAt }
-            .map { Info(id: $0.id, name: $0.title) }
-        vaults = [Info(id: "", name: "Personal")] + named
+    @ObservationIgnored private weak var account: Account?
+    @ObservationIgnored private var directory: [Info] = []      // from the server (cached)
+
+    private var cacheKey: String { "vault-directory:" + (account?.user ?? "") }
+
+    func attach(_ account: Account) { self.account = account }
+
+    /// Rebuilds from the cached directory and this Mac's keychain, then refreshes from the server.
+    func reload() {
+        directory = UserDefaults.standard.data(forKey: cacheKey).flatMap { try? JSONDecoder().decode([Info].self, from: $0) } ?? []
+        publish()
+        Task { await refresh() }
     }
 
-    private func commit(_ t: Todo) {
-        let t = t.touched(by: device)
-        rows[t.id] = t
-        rebuild()
-        guard let repo else { return }
-        q.async { [weak self] in
-            try? repo.saveLocal([t])
-            DispatchQueue.main.async { self?.onLocalChange?() }
-        }
+    private func publish() {
+        guard let acct = account, let user = acct.user else { vaults = [Info(id: "", name: "Personal", unlocked: true)]; return }
+        let personal = Info(id: "", name: "Personal", unlocked: acct.vault != nil)
+        vaults = [personal] + directory.map { var v = $0; v.unlocked = Secrets.vaultKey(user: user, id: v.id) != nil; return v }
     }
 
+    func name(_ id: String) -> String { vaults.first { $0.id == id }?.name ?? (id.isEmpty ? "Personal" : "Vault") }
+    func isUnlocked(_ id: String) -> Bool { vaults.first { $0.id == id }?.unlocked ?? false }
+
+    // MARK: server
+
+    private struct Problem: LocalizedError { let errorDescription: String?; init(_ s: String) { errorDescription = s } }
+
+    private func saveCache() { UserDefaults.standard.set(try? JSONEncoder().encode(directory), forKey: cacheKey) }
+
+    func refresh() async {
+        guard let acct = account, acct.session != nil else { return }
+        do {
+            let (d, code) = try await acct.authed("/api/vaults")
+            guard code == 200 else { return }
+            struct Row: Decodable { let id: String; let name: String }
+            struct Reply: Decodable { let vaults: [Row] }
+            let rows = try JSONDecoder().decode(Reply.self, from: d).vaults
+            directory = rows.filter { Vaults.isValidID($0.id) && !$0.id.isEmpty }.map { Info(id: $0.id, name: $0.name) }
+            await adoptLegacy()
+            saveCache()
+            publish()
+        } catch { self.error = error.localizedDescription }
+    }
+
+    /// A brand-new vault: random key (kept on this Mac), listed in the account's directory.
+    /// Returns its id and code; show the code once so it can be saved.
+    func create(_ name: String) async throws -> (id: String, code: String) {
+        guard let acct = account, let user = acct.user else { throw Problem("Sign in first.") }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let id = Vaults.newID()
+        let v = Vault.generate()
+        let (_, c1) = try await acct.authed("/api/vaults", method: "POST", body: ["id": id, "name": name])
+        guard c1 == 200 else { throw Problem("Couldn't create the vault (\(c1)).") }
+        let (_, c2) = try await acct.authed("/api/keycheck?vault=" + id, method: "PUT", body: ["keycheck": try v.keyCheck()])
+        guard c2 == 200 else { throw Problem("Couldn't save the vault's key check (\(c2)).") }
+        Secrets.storeVaultKey(v, user: user, id: id)
+        directory.append(Info(id: id, name: name))
+        saveCache()
+        publish()
+        return (id, VaultCode.make(id: id, vault: v))
+    }
+
+    /// Unlocks a vault on this Mac with its code, after checking it against the vault's key check.
     @discardableResult
-    func create(_ name: String) -> String? {
+    func unlock(code: String, expecting id: String? = nil) async throws -> String {
+        guard let acct = account, let user = acct.user else { throw Problem("Sign in first.") }
+        guard let (cid, v) = VaultCode.parse(code) else { throw Problem("That doesn't look like a vault code (it starts with CV1-).") }
+        if let id, id != cid { throw Problem("That code is for a different vault.") }
+        let (d, status) = try await acct.authed("/api/keycheck?vault=" + cid)
+        guard status == 200 else { throw Problem("Server error \(status).") }
+        let check = (try? JSONSerialization.jsonObject(with: d) as? [String: Any])?["keycheck"] as? String
+        guard let check else { throw Problem("No vault with that code on this account.") }
+        guard v.verify(keyCheck: check) else { throw Problem("That code doesn't unlock this vault.") }
+        Secrets.storeVaultKey(v, user: user, id: cid)
+        if !directory.contains(where: { $0.id == cid }) { await refresh() }
+        publish()
+        return cid
+    }
+
+    func rename(_ id: String, to name: String) async {
+        guard let acct = account, !id.isEmpty else { return }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return nil }
-        let sort = (rows.values.map(\.sort).max() ?? 0) + 1
-        let t = Todo(id: Vaults.newID(), title: name, sort: sort, origin: device)
-        commit(t)
-        return t.id
+        guard !name.isEmpty, let (_, code) = try? await acct.authed("/api/vaults/" + id, method: "PATCH", body: ["name": name]),
+              code == 200 else { return }
+        if let i = directory.firstIndex(where: { $0.id == id }) { directory[i].name = name }
+        saveCache()
+        publish()
     }
 
-    func rename(_ id: String, to name: String) {
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !id.isEmpty, !name.isEmpty, var t = rows[id] else { return }
-        t.title = name
-        commit(t)
+    /// Removes the vault from the account's directory (every device). Its sealed contents stay on the server.
+    func delete(_ id: String) async {
+        guard let acct = account, !id.isEmpty else { return }
+        _ = try? await acct.authed("/api/vaults/" + id, method: "DELETE")
+        lock(id)
+        directory.removeAll { $0.id == id }
+        saveCache()
+        publish()
     }
 
-    /// Removes the vault from every device's list. Its items stay in its own database and sync room.
-    func remove(_ id: String) {
-        guard !id.isEmpty, var t = rows[id] else { return }
-        t.deleted = true
-        commit(t)
-    }
-}
-
-extension VaultIndex: SyncTarget {
-    var vaultID: String { Vaults.index }
-    func setSyncState(_ s: SyncState) { syncState = s }
-
-    func pendingRows(_ done: @escaping ([Todo]) -> Void) {
-        guard let repo else { return done([]) }
-        q.async { let r = (try? repo.dirty()) ?? []; DispatchQueue.main.async { done(r) } }
+    /// Locks the vault on this Mac only: its key and local copy go away; other devices keep it.
+    func lock(_ id: String) {
+        guard let user = account?.user, !id.isEmpty else { return }
+        Secrets.deleteVaultKey(user: user, id: id)
+        let db = Paths.database(vault: id).path
+        for f in [db, db + "-wal", db + "-shm"] { try? FileManager.default.removeItem(atPath: f) }
+        publish()
     }
 
-    func cursor(_ done: @escaping (Int64) -> Void) {
-        guard let repo else { return done(0) }
-        q.async { let c = Int64((try? repo.meta("cursor")) ?? "0") ?? 0; DispatchQueue.main.async { done(c) } }
+    func code(_ id: String) -> String? {
+        guard let user = account?.user, let v = Secrets.vaultKey(user: user, id: id) else { return nil }
+        return VaultCode.make(id: id, vault: v)
     }
 
-    func applyRemote(_ incoming: [Todo], cursor: Int64?) {
-        guard let repo else { return }
-        q.async { [weak self] in
-            let applied = (try? repo.applyRemote(incoming)) ?? []
-            if let c = cursor, c > (Int64((try? repo.meta("cursor")) ?? "0") ?? 0) { try? repo.setMeta("cursor", String(c)) }
-            DispatchQueue.main.async {
-                guard let self, !applied.isEmpty else { return }
-                for t in applied { self.rows[t.id] = t }
-                self.rebuild()
+    /// Vaults made earlier today (key derived from the account key, listed in a synced index) move into
+    /// the directory once, keeping their key so they keep working.
+    private func adoptLegacy() async {
+        guard let acct = account, let user = acct.user, let accountKey = acct.vault,
+              let repo = try? TodoRepo(vault: Vaults.index) else { return }
+        for t in (try? repo.all()) ?? [] where !t.deleted && Vaults.isValidID(t.id) && !t.id.isEmpty {
+            guard !directory.contains(where: { $0.id == t.id }) else { continue }
+            let v = accountKey.forVault(t.id)
+            guard let (_, c) = try? await acct.authed("/api/vaults", method: "POST", body: ["id": t.id, "name": t.title]),
+                  c == 200 || c == 409 else { continue }
+            if let check = try? v.keyCheck() {
+                _ = try? await acct.authed("/api/keycheck?vault=" + t.id, method: "PUT", body: ["keycheck": check])
             }
+            if Secrets.vaultKey(user: user, id: t.id) == nil { Secrets.storeVaultKey(v, user: user, id: t.id) }
+            directory.append(Info(id: t.id, name: t.title))
         }
     }
 }

@@ -13,6 +13,7 @@ final class Account {
         case working(String)
         case needsKey            // signed in, but this Mac doesn't have the account key yet
         case showRecovery        // a new account key was just made: write the recovery key down
+        case vaultsOnly          // signed in without the account key: only vaults unlocked by their codes
         case ready
     }
 
@@ -38,8 +39,9 @@ final class Account {
             vault = Secrets.vault(for: u)
         }
         if session == nil { state = .signedOut }
-        else if vault == nil { state = .needsKey }
-        else { state = .ready }
+        else if vault != nil { state = .ready }
+        else if let u = user, UserDefaults.standard.bool(forKey: "vaults-only:" + u) { state = .vaultsOnly }
+        else { state = .needsKey }
     }
 
     var serverURL: String { SyncConfig.load()?.url ?? Self.defaultServer }
@@ -183,11 +185,19 @@ final class Account {
     /// The recovery key has been written down: start syncing.
     func confirmRecoverySaved() { finish() }
 
+    /// This Mac skips Personal (no recovery key) and opens only vaults whose codes are pasted here.
+    func useVaultsOnly() {
+        guard let u = user else { return }
+        UserDefaults.standard.set(true, forKey: "vaults-only:" + u)
+        state = .vaultsOnly
+        app?.vaultsChanged()
+    }
+
     private func finish() {
+        if let u = user { UserDefaults.standard.removeObject(forKey: "vaults-only:" + u) }
         state = .ready
         app?.store.prepareForEncryptedSync()
-        app?.sync.reload()
-        app?.vaultSync.reload()
+        app?.vaultsChanged()
         Task { await wipeLegacyCopy() }
     }
 
@@ -199,15 +209,14 @@ final class Account {
         email = nil
         state = .signedOut
         saveConfig()
-        app?.sync.reload()
-        app?.vaultSync.reload()
+        app?.vaultsChanged()
     }
 
     // MARK: server
 
-    private struct Problem: LocalizedError { let errorDescription: String?; init(_ s: String) { errorDescription = s } }
+    struct Problem: LocalizedError { let errorDescription: String?; init(_ s: String) { errorDescription = s } }
 
-    private func authed(_ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> (Data, Int) {
+    func authed(_ path: String, method: String = "GET", body: [String: Any]? = nil) async throws -> (Data, Int) {
         guard let session else { throw Problem("not signed in") }
         var req = URLRequest(url: URL(string: serverURL + path)!)
         req.httpMethod = method
@@ -304,6 +313,8 @@ struct AccountSheet: View {
                     Button("Unlock") { Task { await acct.unlock(recoveryKey: recovery) } }.disabled(recovery.isEmpty)
                     Button("Check iCloud Keychain again") { Task { await acct.unlock(recoveryKey: nil) } }
                     Spacer()
+                    Button("Skip: vaults only") { acct.useVaultsOnly() }.buttonStyle(.plain).foregroundStyle(Theme.dim)
+                        .help("Don't unlock Personal on this Mac; open vaults with their codes instead")
                     Button("Sign out") { acct.signOut() }.buttonStyle(.plain).foregroundStyle(Theme.dim)
                 }
             case .showRecovery:
@@ -316,6 +327,20 @@ struct AccountSheet: View {
                         .font(Theme.uiSmall).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
                 }
                 HStack { Spacer(); Button("I've saved it") { acct.confirmRecoverySaved() }.keyboardShortcut(.defaultAction) }
+            case .vaultsOnly:
+                Text("Signed in\(acct.email.map { " as \($0)" } ?? "") · vaults only")
+                    .foregroundStyle(Theme.body)
+                Text("Personal stays locked on this Mac. Vaults open here only with their codes (Vault menu, Unlock Vault).")
+                    .font(Theme.uiSmall).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
+                TextField("Recovery key, to unlock Personal too", text: $recovery)
+                    .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced))
+                    .padding(8).background(Theme.selection).clipShape(RoundedRectangle(cornerRadius: 5))
+                    .onSubmit { Task { await acct.unlock(recoveryKey: recovery) } }
+                HStack {
+                    Button("Unlock Personal") { Task { await acct.unlock(recoveryKey: recovery) } }.disabled(recovery.isEmpty)
+                    Spacer()
+                    Button("Sign out") { acct.signOut() }.buttonStyle(.plain).foregroundStyle(Theme.dim)
+                }
             case .ready:
                 Text("Signed in\(acct.email.map { " as \($0)" } ?? "") · end-to-end encrypted")
                     .foregroundStyle(Theme.body)

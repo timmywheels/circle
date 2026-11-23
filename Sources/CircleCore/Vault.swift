@@ -120,6 +120,23 @@ public struct SealedRow: Codable, Sendable, Equatable {
 
 public enum VaultError: Error { case corrupt }
 
+/// A vault code carries one vault's id and its key: "CV1-<id>-<key in recovery-key form>".
+/// Pasting it on a device opens that vault there and nothing else.
+public enum VaultCode {
+    public static func make(id: String, vault: Vault) -> String { "CV1-" + id + "-" + vault.recoveryKey }
+
+    public static func parse(_ s: String) -> (id: String, vault: Vault)? {
+        var t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.uppercased().hasPrefix("CV1-") else { return nil }
+        t = String(t.dropFirst(4))
+        guard let dash = t.firstIndex(of: "-") else { return nil }
+        let id = String(t[..<dash]).lowercased()
+        guard !id.isEmpty, id != Vaults.index, Vaults.isValidID(id),
+              let v = Vault(recoveryKey: String(t[t.index(after: dash)...])) else { return nil }
+        return (id, v)
+    }
+}
+
 /// Secrets in the keychain. The account key is synchronizable (iCloud Keychain), so a new Mac
 /// signed in to the same Apple ID receives it; the session token stays on this device.
 public enum Secrets {
@@ -171,6 +188,17 @@ public enum Secrets {
         SecItemDelete(q as CFDictionary)
         SecItemDelete(base(account) as CFDictionary)
     }
+
+    /// One vault's own key: this device only (never iCloud Keychain), so separation holds per device.
+    public static func vaultKey(user: String, id: String) -> Vault? {
+        load(account: "vaultkey:\(user):\(id)").map { Vault(key: SymmetricKey(data: $0)) }
+    }
+
+    public static func storeVaultKey(_ v: Vault, user: String, id: String) {
+        save(v.key.withUnsafeBytes { Data($0) }, account: "vaultkey:\(user):\(id)", synced: false)
+    }
+
+    public static func deleteVaultKey(user: String, id: String) { delete(account: "vaultkey:\(user):\(id)") }
 
     public static func vault(for user: String) -> Vault? {
         load(account: "vault:" + user).map { Vault(key: SymmetricKey(data: $0)) }

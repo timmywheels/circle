@@ -14,6 +14,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/Circle" "$APP/Contents/MacOS/Circle"
 cp "$BIN/circle-mcp" "$APP/Contents/MacOS/circle-mcp"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+# Sparkle (auto-updates) ships as a framework next to the binary; embed it.
+mkdir -p "$APP/Contents/Frameworks"
+ditto "$BIN/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 
 # App icon. Prefer the macOS 26 Icon Composer format (AppIcon.icon: full-shape, Liquid Glass),
 # fall back to the classic asset catalog if this actool can't compile it.
@@ -34,6 +37,13 @@ echo "icon: $ICON_NAME"; grep -iE "error|warning" build/actool.log | head -5 || 
 # Sign with your Developer ID (hardened runtime, ready for notarization); ad-hoc if it's missing.
 IDENTITY="${SIGNING_IDENTITY:-}"
 if [ -n "$IDENTITY" ] && security find-identity -v -p codesigning | grep -qF "$IDENTITY"; then
+  # Sparkle's helpers inside out, then the framework (Sparkle's documented order for Developer ID).
+  SP="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$SP/XPCServices/Installer.xpc"
+  codesign --force --options runtime --timestamp --preserve-metadata=entitlements --sign "$IDENTITY" "$SP/XPCServices/Downloader.xpc"
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$SP/Autoupdate"
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$SP/Updater.app"
+  codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP/Contents/Frameworks/Sparkle.framework"
   codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP/Contents/MacOS/circle-mcp"
   # With the provisioning profile, the app gets its keychain group (iCloud Keychain sync for the account key).
   if [ -f Resources/Circle.provisionprofile ]; then
@@ -45,6 +55,7 @@ if [ -n "$IDENTITY" ] && security find-identity -v -p codesigning | grep -qF "$I
   codesign --verify --strict --verbose=2 "$APP"
 else
   echo "Developer ID not found, signing ad-hoc"
+  codesign --force --deep --sign - "$APP/Contents/Frameworks/Sparkle.framework"
   codesign --force --sign - "$APP/Contents/MacOS/circle-mcp"
   codesign --force --sign - "$APP"
 fi
