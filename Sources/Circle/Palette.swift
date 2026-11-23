@@ -59,7 +59,13 @@ struct Palette: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.1)))
         .shadow(color: .black.opacity(0.2), radius: 28, y: 10)
         .padding(.horizontal, 16)
-        .onAppear { focus.wrappedValue = .palette }
+        .onAppear {
+            // The list buffer is an AppKit text view holding first responder; SwiftUI focus alone
+            // won't take the keyboard from it. Release it, then focus the field once it's in the window.
+            NSApp.keyWindow?.makeFirstResponder(nil)
+            DispatchQueue.main.async { focus.wrappedValue = .palette }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { focus.wrappedValue = .palette }
+        }
     }
 
     private func pick(_ items: [PaletteItem]) {
