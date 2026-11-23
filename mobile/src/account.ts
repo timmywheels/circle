@@ -15,13 +15,16 @@ export type AccountState =
   | { kind: "newKey"; user: string; email: string | null; session: string; vault: Vault }
   | { kind: "ready"; user: string; email: string | null; session: string; vault: Vault };
 
+// SecureStore keys allow only letters, digits, ".", "-" and "_".
+const vaultKey = (user: string) => "vault_" + user.replace(/[^A-Za-z0-9._-]/g, "_");
+
 const opts: SecureStore.SecureStoreOptions = { keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK };
 
 export async function restore(): Promise<AccountState> {
   const raw = await SecureStore.getItemAsync("account", opts);
   if (!raw) return { kind: "signedOut" };
   const a = JSON.parse(raw) as { user: string; email: string | null; session: string };
-  const key = await SecureStore.getItemAsync("vault:" + a.user, opts);
+  const key = await SecureStore.getItemAsync(vaultKey(a.user), opts);
   if (!key) return { kind: "needsKey", ...a };
   return { kind: "ready", ...a, vault: new Vault(fromBase64(key), randomBytes) };
 }
@@ -46,18 +49,19 @@ export async function signIn(): Promise<AccountState> {
 export async function setUpKey(a: { user: string; email: string | null; session: string }): Promise<AccountState> {
   const check = await getKeyCheck(a.session);
   if (check) {
-    const saved = await SecureStore.getItemAsync("vault:" + a.user, opts);
+    const saved = await SecureStore.getItemAsync(vaultKey(a.user), opts);
     const v = saved ? new Vault(fromBase64(saved), randomBytes) : null;
     if (v && v.verify(check)) return { kind: "ready", ...a, vault: v };
     return { kind: "needsKey", ...a };
   }
+  // Keep the key on the phone before publishing its check, so a failure can't strand the account.
   const v = Vault.generate(randomBytes);
+  await SecureStore.setItemAsync(vaultKey(a.user), toBase64(v.key), opts);
   const put = await fetch(SERVER + "/api/keycheck", {
     method: "PUT", headers: { Authorization: "Bearer " + a.session, "Content-Type": "application/json" },
     body: JSON.stringify({ keycheck: v.keyCheck() }),
   });
   if (!put.ok) throw new Error("Couldn't save the key check (" + put.status + ")");
-  await SecureStore.setItemAsync("vault:" + a.user, toBase64(v.key), opts);
   return { kind: "newKey", ...a, vault: v };
 }
 
@@ -66,13 +70,13 @@ export async function unlock(a: { user: string; email: string | null; session: s
   if (!v) throw new Error("That doesn't look like a recovery key.");
   const check = await getKeyCheck(a.session);
   if (check && !v.verify(check)) throw new Error("That key doesn't unlock this account.");
-  await SecureStore.setItemAsync("vault:" + a.user, toBase64(v.key), opts);
+  await SecureStore.setItemAsync(vaultKey(a.user), toBase64(v.key), opts);
   return { kind: "ready", ...a, vault: v };
 }
 
 export async function signOut(user?: string) {
   await SecureStore.deleteItemAsync("account", opts);
-  if (user) await SecureStore.deleteItemAsync("vault:" + user, opts);
+  if (user) await SecureStore.deleteItemAsync(vaultKey(user), opts);
 }
 
 async function getKeyCheck(session: string): Promise<string | null> {

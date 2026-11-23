@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
-  ActionSheetIOS, ActivityIndicator, Alert, AppState, FlatList, KeyboardAvoidingView, Modal, Platform,
+  ActionSheetIOS, ActivityIndicator, Alert, AppState, FlatList, Keyboard, KeyboardAvoidingView, Modal, Platform,
   Pressable, ScrollView, StyleSheet, Text, TextInput, View, useColorScheme,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
@@ -78,8 +78,14 @@ export default function App() {
   );
 }
 
+// Onboarding screens scroll and shrink above the keyboard, so the field and any error stay visible.
 const Center = ({ children }: { children: React.ReactNode }) => (
-  <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 28 }}>{children}</View>
+  <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
+    <ScrollView contentContainerStyle={{ flexGrow: 1, alignItems: "center", justifyContent: "center", padding: 28 }}
+                keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
+      {children}
+    </ScrollView>
+  </KeyboardAvoidingView>
 );
 
 // MARK: onboarding
@@ -111,9 +117,10 @@ function Unlock({ p, error, onUnlock, onRetry, onSignOut }:
         (Mac: Sync & Account, Show recovery key).
       </Text>
       <TextInput value={key} onChangeText={setKey} placeholder="XXXX-XXXX-…" placeholderTextColor={p.faint}
-        autoCapitalize="characters" autoCorrect={false} multiline
+        autoCapitalize="characters" autoCorrect={false} multiline returnKeyType="done" submitBehavior="blurAndSubmit"
+        onSubmitEditing={() => key.trim() && onUnlock(key)}
         style={[s.keyInput, { color: p.text, backgroundColor: p.fill }]} />
-      <Pressable onPress={() => onUnlock(key)} disabled={!key.trim()} style={[s.primary, { backgroundColor: p.text, opacity: key.trim() ? 1 : 0.4 }]}>
+      <Pressable onPress={() => { Keyboard.dismiss(); onUnlock(key); }} disabled={!key.trim()} style={[s.primary, { backgroundColor: p.text, opacity: key.trim() ? 1 : 0.4 }]}>
         <Text style={[s.primaryText, { color: p.bg }]}>Unlock</Text>
       </Pressable>
       <View style={{ flexDirection: "row", gap: 24, marginTop: 18 }}>

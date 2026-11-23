@@ -7,12 +7,16 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "runtimeVersion": { "policy": "appVersion" },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
     "ios": {
       "bundleIdentifier": "com.timwheeler.circle.mobile",
       "supportsTablet": false,
       "usesAppleSignIn": true,
-      "config": { "usesNonExemptEncryption": false }
+      "config": {
+        "usesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "com.timwheeler.circle.mobile",
@@ -27,7 +31,21 @@
       "expo-apple-authentication",
       "expo-secure-store",
       "expo-sqlite",
-      ["expo-notifications", { "sounds": [] }]
-    ]
+      [
+        "expo-notifications",
+        {
+          "sounds": []
+        }
+      ]
+    ],
+    "owner": "timwheeler",
+    "extra": {
+      "eas": {
+        "projectId": "800addcd-b479-4e9e-942e-d6baa26041ac"
+      }
+    },
+    "updates": {
+      "url": "https://u.expo.dev/800addcd-b479-4e9e-942e-d6baa26041ac"
+    }
   }
 }

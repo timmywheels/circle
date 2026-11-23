@@ -20,5 +20,5 @@ tag = "v2"
 new_sqlite_classes = ["SealedRoom"]
 
 [vars]
-APPLE_AUDIENCE = "com.timwheeler.circle,com.timwheeler.circle.mobile"
+APPLE_AUDIENCE = "com.timwheeler.circle,com.timwheeler.circle.mobile,host.exp.Exponent"
 APPLE_SERVICES_ID = "com.timwheeler.circle.signin"
