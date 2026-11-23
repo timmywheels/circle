@@ -91,14 +91,16 @@ final class BufferLayoutManager: NSLayoutManager {
     override func setExtraLineFragmentRect(_ r: NSRect, usedRect u: NSRect, textContainer c: NSTextContainer) {
         guard let f = bodyFont, !r.isEmpty else { return super.setExtraLineFragmentRect(r, usedRect: u, textContainer: c) }
         let h = defaultLineHeight(for: f) + Self.lineSpacing
-        super.setExtraLineFragmentRect(NSRect(x: r.minX, y: r.minY, width: r.width, height: h),
-                                       usedRect: NSRect(x: u.minX, y: r.minY, width: u.width, height: h), textContainer: c)
+        let y = r.minY
+        super.setExtraLineFragmentRect(NSRect(x: r.minX, y: y, width: r.width, height: h),
+                                       usedRect: NSRect(x: u.minX, y: y, width: u.width, height: h), textContainer: c)
     }
 }
 
 @MainActor
 final class BufferController: NSObject, NSTextViewDelegate {
     static let topInset: CGFloat = 34
+    static let firstLineFallback: CGFloat = 0
     static let indentStep: CGFloat = 22
 
     let app: AppModel
@@ -837,7 +839,9 @@ final class BufferController: NSObject, NSTextViewDelegate {
         if l.range.length == 0 {
             let p = ts.attribute(.paragraphStyle, at: l.range.location, effectiveRange: nil) as? NSParagraphStyle
             let f = ts.attribute(.font, at: l.range.location, effectiveRange: nil) as? NSFont ?? font
-            return frag.minY + o.y + (p?.paragraphSpacingBefore ?? 0) + lm.defaultBaselineOffset(for: f)
+            // TextKit doesn't add spacing above the first line in the container.
+            let before = l.range.location == 0 ? 0 : (p?.paragraphSpacingBefore ?? 0)
+            return frag.minY + o.y + before + lm.defaultBaselineOffset(for: f)
         }
         return frag.minY + lm.location(forGlyphAt: gi).y + o.y
     }
@@ -1282,7 +1286,9 @@ final class BufferTextView: NSTextView {
         // Empty buffer.
         if (textStorage?.length ?? 0) == 0 && c.renderedIDs.isEmpty {
             let s = NSAttributedString(string: c.placeholder, attributes: [.font: font, .foregroundColor: BufferController.faint])
-            s.draw(at: NSPoint(x: c.textX(depth: 0, section: false), y: BufferController.topInset + 5))
+            // Same spot the caret sits: the empty first line's fragment.
+            let top = (layoutManager?.extraLineFragmentRect.minY ?? BufferController.firstLineFallback) + textContainerOrigin.y
+            s.draw(at: NSPoint(x: c.textX(depth: 0, section: false), y: top))
         }
     }
 }

@@ -189,6 +189,16 @@ public enum Secrets {
         SecItemDelete(base(account) as CFDictionary)
     }
 
+    /// Removes only this Mac's copy of an item, never the iCloud Keychain one (which would remove it
+    /// from every device signed in to the same Apple ID).
+    public static func deleteLocalOnly(account: String) {
+        var q = base(account)
+        q[kSecUseDataProtectionKeychain as String] = true
+        q[kSecAttrSynchronizable as String] = false
+        SecItemDelete(q as CFDictionary)
+        SecItemDelete(base(account) as CFDictionary)
+    }
+
     /// One vault's own key: this device only (never iCloud Keychain), so separation holds per device.
     public static func vaultKey(user: String, id: String) -> Vault? {
         load(account: "vaultkey:\(user):\(id)").map { Vault(key: SymmetricKey(data: $0)) }

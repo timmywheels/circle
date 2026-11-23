@@ -36,7 +36,8 @@ final class Account {
         email = cfg?.email
         if let u = user {
             session = Secrets.load(account: "session:" + u).flatMap { String(data: $0, encoding: .utf8) }
-            vault = Secrets.vault(for: u)
+            // A Mac that locked Personal ignores the account key even if iCloud Keychain brings it back.
+            vault = UserDefaults.standard.bool(forKey: "vaults-only:" + u) ? nil : Secrets.vault(for: u)
         }
         if session == nil { state = .signedOut }
         else if vault != nil { state = .ready }
@@ -189,6 +190,18 @@ final class Account {
     func useVaultsOnly() {
         guard let u = user else { return }
         UserDefaults.standard.set(true, forKey: "vaults-only:" + u)
+        state = .vaultsOnly
+        app?.vaultsChanged()
+    }
+
+    /// Personal off on this Mac only. The account key may live in iCloud Keychain, so this removes just
+    /// this Mac's copy and sets a flag that ignores the synced one; other Macs keep Personal.
+    func lockPersonal() {
+        guard let u = user else { return }
+        UserDefaults.standard.set(true, forKey: "vaults-only:" + u)
+        Secrets.deleteLocalOnly(account: "vault:" + u)
+        vault = nil
+        keyWhere = nil
         state = .vaultsOnly
         app?.vaultsChanged()
     }

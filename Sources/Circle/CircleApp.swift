@@ -47,7 +47,8 @@ struct CircleApp: App {
                 Button("Show Vault Code…") { app.showVaultCode() }.disabled(app.store.vault.isEmpty)
                 Button("Rename Vault…") { app.renameVault() }.disabled(app.store.vault.isEmpty)
                 Divider()
-                Button("Lock Vault on This Mac…") { app.lockVault() }.disabled(app.store.vault.isEmpty)
+                Button(app.store.vault.isEmpty ? "Lock Personal on This Mac…" : "Lock Vault on This Mac…") { app.lockVault() }
+                    .disabled(app.store.vault.isEmpty && app.account.session == nil)
                 Button("Delete Vault…") { app.deleteVault() }.disabled(app.store.vault.isEmpty)
             }
             CommandMenu("Go") {
@@ -283,10 +284,34 @@ final class AppModel {
 
     func lockVault() {
         let id = store.vault
+        if id.isEmpty { lockPersonal(); return }
         guard !id.isEmpty, confirm("Lock \(vaultName) on this Mac?",
                                    "Its key and local copy leave this Mac. Other devices keep it; you'll need the vault code to open it here again.",
                                    button: "Lock") else { return }
         leaveVault(id) { self.vaults.lock(id) }
+    }
+
+    /// Personal off on this Mac: needs another vault to switch to, and nothing waiting to sync.
+    private func lockPersonal() {
+        guard let next = vaults.unlocked.first(where: { !$0.id.isEmpty })?.id else {
+            alert("Open another vault first", "Create or unlock a vault on this Mac before locking Personal, so Circle has something to show.")
+            return
+        }
+        guard confirm("Lock Personal on this Mac?",
+                      "Personal's key and local copy leave this Mac. Your other Macs and your phone keep it. To open it here again, use your recovery key (Sync & Account).",
+                      button: "Lock Personal") else { return }
+        store.pendingRows { [weak self] rows in
+            guard let self else { return }
+            guard rows.isEmpty else {
+                self.alert("Still syncing", "Personal has changes that haven't reached the server yet. Try again in a moment.")
+                return
+            }
+            self.openVault(next)
+            self.account.lockPersonal()
+            let db = Paths.database(vault: "").path
+            for f in [db, db + "-wal", db + "-shm"] { try? FileManager.default.removeItem(atPath: f) }
+            self.vaults.reload()
+        }
     }
 
     func deleteVault() {

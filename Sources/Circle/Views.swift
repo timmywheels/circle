@@ -39,6 +39,14 @@ struct RootView: View {
         let panelID = app.panelOpen ? app.store.selection : nil
         let listColumn = VStack(spacing: 0) {
             TodoBuffer()
+                // Rows scroll up under the traffic lights; a background strip there keeps them from
+                // showing through (solid behind the buttons, fading out just below).
+                .overlay(alignment: .top) {
+                    LinearGradient(stops: [.init(color: Theme.bg, location: 0), .init(color: Theme.bg, location: 0.7),
+                                           .init(color: Theme.bg.opacity(0), location: 1)],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: 34).allowsHitTesting(false)
+                }
             Rectangle().fill(Theme.line).frame(height: 1)
             StatusLine()
         }
