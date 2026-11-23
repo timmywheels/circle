@@ -136,7 +136,31 @@ public enum Paths {
         return dir
     }()
     public static var database: URL { support.appendingPathComponent("circle.sqlite") }
+
+    /// Each vault is its own database. "" is the original list (Personal).
+    public static func database(vault: String) -> URL {
+        guard !vault.isEmpty else { return database }
+        let dir = support.appendingPathComponent("vaults", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent(vault + ".sqlite")
+    }
+
+    /// The vault open in the app, so circle-mcp (agents) works in the same list.
+    public static var currentVaultFile: URL { support.appendingPathComponent("current-vault") }
+    public static var currentVault: String {
+        let v = (try? String(contentsOf: currentVaultFile, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return Vaults.isValidID(v) ? v : ""
+    }
     public static var syncConfig: URL { support.appendingPathComponent("sync.json") }
+}
+
+/// Vault ids: "" is Personal; "_index" holds the list of vaults; others are short random ids.
+public enum Vaults {
+    public static let index = "_index"
+    public static func isValidID(_ s: String) -> Bool {
+        s.isEmpty || (s.count <= 40 && s.allSatisfy { $0.isLowercase && $0.isASCII || $0.isNumber || $0 == "_" })
+    }
+    public static func newID() -> String { "v" + String(Todo.newID().suffix(10)) }
 }
 
 /// sync.json: the server, and who is signed in. Secrets (session, account key) live in the keychain.
@@ -164,6 +188,13 @@ public struct SyncConfig: Codable {
         guard var c = URLComponents(string: url) else { return nil }
         c.scheme = (c.scheme == "http") ? "ws" : "wss"
         c.path = "/sync"
+        return c.url
+    }
+
+    /// The socket for one vault ("" = Personal, the original room).
+    public func socketURL(vault: String) -> URL? {
+        guard var c = socketURL.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }) else { return nil }
+        if !vault.isEmpty { c.queryItems = [URLQueryItem(name: "vault", value: vault)] }
         return c.url
     }
 }

@@ -187,6 +187,7 @@ final class Account {
         state = .ready
         app?.store.prepareForEncryptedSync()
         app?.sync.reload()
+        app?.vaultSync.reload()
         Task { await wipeLegacyCopy() }
     }
 
@@ -199,6 +200,7 @@ final class Account {
         state = .signedOut
         saveConfig()
         app?.sync.reload()
+        app?.vaultSync.reload()
     }
 
     // MARK: server

@@ -14,8 +14,8 @@ function session(user, expOffset = 3600) {
   return `${body}.${b64url(createHmac("sha256", SECRET).update(body).digest())}`;
 }
 
-function client(token, name) {
-  const ws = new WebSocket(WS, { headers: { Authorization: `Bearer ${token}` } });
+function client(token, name, vault = "") {
+  const ws = new WebSocket(WS + (vault ? "?vault=" + vault : ""), { headers: { Authorization: `Bearer ${token}` } });
   const inbox = [], waiters = [];
   ws.on("message", (d) => { inbox.push(JSON.parse(d.toString())); waiters.splice(0).forEach((w) => w()); });
   const next = (pred = () => true, ms = 3000) => new Promise((res, rej) => {
@@ -94,6 +94,22 @@ const A3 = client(alice, "alice-mac3"); await A3.opened; A3.send({ t: "hello", s
 const back = await A3.next((m) => m.t === "rows");
 assert.ok(back.rows.some((x) => x.id === "t1" && x.deleted), "new device gets the full history");
 console.log("✓ backfill for a new device");
+
+// 7b. vaults: separate rooms per vault, same account
+const W = client(alice, "alice-work", "work"); await W.opened; W.send({ t: "hello", since: 0 });
+const workAll = await W.next((m) => m.t === "rows");
+assert.equal(workAll.rows.length, 0, "a new vault starts empty (Personal rows don't leak in)");
+W.send({ t: "push", rows: [sealed("w1", "WORK-1", 5000, "mac1")] });
+await W.next((m) => m.cursor === null);
+const P = client(alice, "alice-personal"); await P.opened; P.send({ t: "hello", since: 0 });
+const pAll = await P.next((m) => m.t === "rows");
+assert.ok(!pAll.rows.some((x) => x.id === "w1"), "vault rows stay out of Personal");
+const BW = client(bob, "bob-work", "work"); await BW.opened; BW.send({ t: "hello", since: 0 });
+assert.equal((await BW.next((m) => m.t === "rows")).rows.length, 0, "another account's vault with the same id is separate");
+r = await fetch(`${BASE}/sync?vault=Bad!`, { headers: { Authorization: `Bearer ${alice}` } });
+assert.equal(r.status, 400, "bad vault id refused");
+for (const c of [W, P, BW]) c.ws.close();
+console.log("✓ vaults are separate rooms");
 
 // 8. web sign-in start redirects to Apple with our Services ID
 r = await fetch(`${BASE}/auth/apple/start`, { redirect: "manual" });

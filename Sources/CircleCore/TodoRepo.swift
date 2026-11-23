@@ -7,6 +7,8 @@ public final class TodoRepo: @unchecked Sendable {
     public let db: SQLiteDB
     public let device: String
 
+    public convenience init(vault: String) throws { try self.init(path: Paths.database(vault: vault).path) }
+
     public init(path: String = Paths.database.path) throws {
         db = try SQLiteDB(path: path)
         try db.exec("""

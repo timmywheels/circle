@@ -22,6 +22,21 @@ xcrun stapler staple "$APP"
 spctl --assess --type execute --verbose=2 "$APP"
 # Re-zip the stapled app for distribution.
 rm -f "$ZIP"; ditto -c -k --keepParent "$APP" "$ZIP"
+
+# DMG: Circle.app plus an Applications shortcut to drag it onto. Signed, notarized and stapled itself,
+# so it opens cleanly even offline.
+DMG=build/Circle.dmg
+rm -rf build/dmg "$DMG"; mkdir -p build/dmg
+cp -R "$APP" build/dmg/
+ln -s /Applications build/dmg/Applications
+hdiutil create -volname "Circle" -srcfolder build/dmg -ov -format UDZO "$DMG"
+rm -rf build/dmg
+[ -n "${SIGNING_IDENTITY:-}" ] && codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$DMG"
+echo "submitting the DMG to Apple notary service…"
+xcrun notarytool submit "$DMG" --keychain-profile "${NOTARY_PROFILE:-circle-notary}" --wait --timeout 20m | tee build/notary-dmg.txt
+grep -q "status: Accepted" build/notary-dmg.txt || { echo "RELEASE_FAILED (dmg)"; exit 1; }
+xcrun stapler staple "$DMG"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 rm -rf "$HOME/Applications/Circle.app"; cp -R "$APP" "$HOME/Applications/"
-echo "RELEASE_OK build/Circle.zip"
+echo "RELEASE_OK build/Circle.dmg build/Circle.zip"
 open "$HOME/Applications/Circle.app"

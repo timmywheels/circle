@@ -6,9 +6,20 @@ import CircleCore
 /// Protocol (JSON text frames):
 ///   -> {"t":"hello","since":N}      -> {"t":"push","rows":[...]}
 ///   <- {"t":"rows","rows":[...],"cursor":N}
+/// What a sync connection feeds: a vault's list (Store) or the list of vaults (VaultIndex).
+@MainActor
+protocol SyncTarget: AnyObject {
+    var vaultID: String { get }
+    var onLocalChange: (() -> Void)? { get set }
+    func pendingRows(_ done: @escaping ([Todo]) -> Void)
+    func cursor(_ done: @escaping (Int64) -> Void)
+    func applyRemote(_ rows: [Todo], cursor: Int64?)
+    func setSyncState(_ s: SyncState)
+}
+
 @MainActor
 final class SyncClient: NSObject, URLSessionWebSocketDelegate {
-    private weak var store: Store?
+    private weak var store: SyncTarget?
     weak var account: Account?
     private var config: SyncConfig?
     private var session: URLSession!
@@ -18,7 +29,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
     private var pushScheduled = false
     private var pingTimer: Timer?
 
-    init(store: Store) {
+    init(store: SyncTarget) {
         self.store = store
         super.init()
         session = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
@@ -27,7 +38,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
 
     func start() {
         config = SyncConfig.load()
-        guard config?.socketURL != nil, account?.isReady == true else { config = nil; store?.syncState = .local; return }
+        guard config?.socketURL != nil, account?.isReady == true else { config = nil; store?.setSyncState(.local); return }
         connect()
     }
 
@@ -39,8 +50,9 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
     }
 
     private func connect() {
-        guard let cfg = config, let url = cfg.socketURL, let bearer = account?.session else { return }
-        store?.syncState = .connecting
+        guard let cfg = config, let target = store, let url = cfg.socketURL(vault: target.vaultID),
+              let bearer = account?.session else { return }
+        store?.setSyncState(.connecting)
         var req = URLRequest(url: url)
         req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         req.timeoutInterval = 10
@@ -56,7 +68,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
             guard webSocketTask === task else { return }
             open = true
             backoff = 0.5
-            store?.syncState = .synced
+            store?.setSyncState(.synced)
             store?.cursor { [weak self] since in self?.send(["t": "hello", "since": since]) }
             schedulePush()
             pingTimer?.invalidate()
@@ -80,7 +92,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
         task = nil
         pingTimer?.invalidate()
         guard config != nil else { return }
-        store?.syncState = .offline
+        store?.setSyncState(.offline)
         let delay = backoff
         backoff = min(backoff * 2, 30)
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -116,7 +128,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
     private func handle(_ text: String) {
         guard let d = text.data(using: .utf8),
               let m = try? JSONDecoder().decode(Incoming.self, from: d), m.t == "rows",
-              let vault = account?.vault else { return }
+              let vault = vaultKey else { return }
         var todos: [Todo] = []
         for r in m.rows ?? [] {
             if let t = try? vault.open(r) { todos.append(t) } else { unreadable += 1 }
@@ -137,7 +149,7 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
             guard let self else { return }
             self.pushScheduled = false
             self.store?.pendingRows { rows in
-                guard let vault = self.account?.vault else { return }
+                guard let vault = self.vaultKey else { return }
                 let sealed = rows.compactMap { try? vault.seal($0) }
                 guard !sealed.isEmpty, let data = try? JSONEncoder().encode(sealed),
                       let json = String(data: data, encoding: .utf8) else { return }
@@ -145,6 +157,9 @@ final class SyncClient: NSObject, URLSessionWebSocketDelegate {
             }
         }
     }
+
+    /// Each vault (and the vault list) has its own key, derived from the account key.
+    private var vaultKey: Vault? { store.flatMap { account?.vault?.forVault($0.vaultID) } }
 
     private func send(_ obj: [String: Any]) {
         guard let d = try? JSONSerialization.data(withJSONObject: obj), let s = String(data: d, encoding: .utf8) else { return }

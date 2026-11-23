@@ -37,7 +37,9 @@ final class Store {
     @ObservationIgnored private var byID: [String: Todo] = [:]
     /// Live (non-deleted) children per parent id ("" = root), sorted.
     @ObservationIgnored private var kids: [String: [Todo]] = [:]
-    @ObservationIgnored private let repo: TodoRepo
+    @ObservationIgnored private var repo: TodoRepo
+    /// The open vault ("" = Personal). Each vault is its own database and sync room.
+    private(set) var vault: String = Paths.currentVault
     @ObservationIgnored private let q = DispatchQueue(label: "circle.db", qos: .userInitiated)
     @ObservationIgnored private var lastVersion: Int64 = 0
     @ObservationIgnored private var pollTimer: Timer?
@@ -76,9 +78,14 @@ final class Store {
 
     init() {
         let repo: TodoRepo
-        do { repo = try TodoRepo() } catch { fatalError("Circle: cannot open database: \(error)") }
+        let start = Paths.currentVault
+        // The device id comes from the original database so this Mac signs edits the same way in every vault.
+        let personal: TodoRepo
+        do { personal = try TodoRepo() } catch { fatalError("Circle: cannot open database: \(error)") }
+        repo = start.isEmpty ? personal : ((try? TodoRepo(vault: start)) ?? personal)
+        vault = repo === personal ? "" : start
         self.repo = repo
-        self.device = repo.device
+        self.device = personal.device
         // Synchronous initial load so the first frame already has data.
         for t in (try? repo.all()) ?? [] { byID[t.id] = t }
         lastVersion = repo.dataVersion()
@@ -674,6 +681,23 @@ final class Store {
     // MARK: sync plumbing (called by SyncClient)
 
     /// First sync into an encrypted room: re-upload every todo (sealed) and read the room from the start.
+    /// Opens another vault in place: same window, same Store, different database.
+    func switchVault(_ id: String) {
+        guard id != vault, Vaults.isValidID(id), id != Vaults.index, let next = try? TodoRepo(vault: id) else { return }
+        pollTimer?.invalidate()
+        q.sync {}                        // let queued writes to the old vault finish
+        repo = next
+        vault = id
+        byID = [:]; undoStack = []; successor = [:]; undoneRepeat = []
+        for t in (try? next.all()) ?? [] { byID[t.id] = t }
+        lastVersion = next.dataVersion()
+        filter = nil; logbook = false
+        rebuild()
+        selection = ordered.first?.id
+        startPolling()
+        try? id.write(to: Paths.currentVaultFile, atomically: true, encoding: .utf8)
+    }
+
     func prepareForEncryptedSync() {
         let repo = repo
         let key = "encrypted-upload:" + (SyncConfig.load()?.user ?? "")
@@ -735,4 +759,10 @@ enum SyncState: Equatable {
         case .offline: return "offline"
         }
     }
+}
+
+
+extension Store: SyncTarget {
+    var vaultID: String { vault }
+    func setSyncState(_ s: SyncState) { syncState = s }
 }

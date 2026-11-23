@@ -81,7 +81,11 @@ export default {
     // Signed-in users: each gets their own end-to-end encrypted room.
     const user = bearer.startsWith("v1.") ? await readSession(bearer, env) : null;
     if (user) {
-      const room = env.SEALED.get(env.SEALED.idFromName("space:personal:" + user));
+      // ?vault=<id> picks one of the user's vaults (its own room); none is the original Personal room.
+      const vault = new URL(req.url).searchParams.get("vault") ?? "";
+      if (vault && !/^[a-z0-9_]{1,40}$/.test(vault)) return new Response("bad vault", { status: 400 });
+      const name = vault ? `space:vault:${user}:${vault}` : "space:personal:" + user;
+      const room = env.SEALED.get(env.SEALED.idFromName(name));
       return room.fetch(req);
     }
 

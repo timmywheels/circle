@@ -135,6 +135,17 @@ struct StatusLine: View {
     var body: some View {
         let reg = app.registry
         HStack(spacing: 14) {
+            // The open vault; click to switch (only shown once there is more than one).
+            if app.vaults.vaults.count > 1 {
+                Menu {
+                    ForEach(app.vaults.vaults) { v in
+                        Button((app.store.vault == v.id ? "✓ " : "") + v.name) { app.openVault(v.id) }
+                    }
+                    Divider()
+                    Button("New Vault…") { app.newVault() }
+                } label: { Text(app.vaultName).foregroundStyle(Color.primary.opacity(0.75)) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            }
             Button { app.paletteOpen = true } label: {
                 if let a = reg.current { Text("\(a.id) · \(reg.model)") }
                 else { Text(reg.scanned ? "no agents" : "scanning…") }

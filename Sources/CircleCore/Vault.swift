@@ -10,6 +10,15 @@ public struct Vault: Sendable {
     public let key: SymmetricKey
 
     public init(key: SymmetricKey) { self.key = key }
+
+    /// The key for one vault, derived from the account key so the one recovery key unlocks them all.
+    /// "" (Personal) is the account key itself. HKDF-SHA256, salt "circle", info "circle-vault:<id>".
+    public func forVault(_ id: String) -> Vault {
+        guard !id.isEmpty else { return self }
+        let k = HKDF<SHA256>.deriveKey(inputKeyMaterial: key, salt: Data("circle".utf8),
+                                       info: Data(("circle-vault:" + id).utf8), outputByteCount: 32)
+        return Vault(key: k)
+    }
     public static func generate() -> Vault { Vault(key: SymmetricKey(size: .bits256)) }
 
     /// What is encrypted: every field except the merge metadata.

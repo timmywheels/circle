@@ -32,6 +32,17 @@ struct CircleApp: App {
                 Button("Actual Size") { Settings.shared.zoom(0) }.keyboardShortcut("0")
                 Divider()
             }
+            CommandMenu("Vault") {
+                ForEach(Array(app.vaults.vaults.enumerated()), id: \.element.id) { i, v in
+                    Button((app.store.vault == v.id ? "✓ " : "    ") + v.name) { app.openVault(v.id) }
+                        .keyboardShortcut(i < 9 ? KeyEquivalent(Character(String(i + 1))) : KeyEquivalent(" "),
+                                          modifiers: i < 9 ? [.control] : [])
+                }
+                Divider()
+                Button("New Vault…") { app.newVault() }
+                Button("Rename Vault…") { app.renameVault() }.disabled(app.store.vault.isEmpty)
+                Button("Remove Vault…") { app.removeVault() }.disabled(app.store.vault.isEmpty)
+            }
             CommandMenu("Go") {
                 // Menu shortcuts work even while typing in a field; list keys live in keymap.json.
                 Button("Command Palette") { app.paletteOpen.toggle() }.keyboardShortcut("k")
@@ -119,6 +130,9 @@ final class AppModel {
     let runner: AgentRunner
     let keymap = Keymap()
     @ObservationIgnored let sync: SyncClient
+    /// The list of vaults, and its own sync connection.
+    let vaults: VaultIndex
+    @ObservationIgnored let vaultSync: SyncClient
     @ObservationIgnored var reminders: Reminders?
     /// Sign in with Apple + the end-to-end encryption key.
     var account: Account!
@@ -132,8 +146,12 @@ final class AppModel {
         registry = r
         runner = AgentRunner(store: s, registry: r)
         sync = SyncClient(store: s)
+        let v = VaultIndex(device: s.device)
+        vaults = v
+        vaultSync = SyncClient(store: v)
         account = Account(app: self)
         sync.account = account
+        vaultSync.account = account
     }
 
     var focusRequest: Field? = .input
@@ -189,7 +207,61 @@ final class AppModel {
             say(settings.error ?? "settings reloaded")
         }
         sync.start()
+        vaultSync.start()
         registry.scan()
+    }
+
+    // MARK: vaults
+
+    var vaultName: String { vaults.name(store.vault) }
+
+    func openVault(_ id: String) {
+        guard id != store.vault else { return }
+        panelOpen = false; paletteOpen = false; history = []
+        store.switchVault(id)
+        sync.reload()
+        reminders?.sync(store.allLive)
+        focusList()
+        say(vaultName)
+    }
+
+    func newVault() {
+        guard let name = ask("New vault", detail: "A separate list with its own encryption key and sync.", value: "") ,
+              let id = vaults.create(name) else { return }
+        openVault(id)
+    }
+
+    func renameVault() {
+        let id = store.vault
+        guard !id.isEmpty, let name = ask("Rename vault", detail: nil, value: vaultName) else { return }
+        vaults.rename(id, to: name)
+    }
+
+    func removeVault() {
+        let id = store.vault
+        guard !id.isEmpty else { return }
+        let a = NSAlert()
+        a.messageText = "Remove \(vaultName)?"
+        a.informativeText = "It disappears from the vault list on all your devices. Its items are kept on the server and on this Mac."
+        a.addButton(withTitle: "Remove"); a.addButton(withTitle: "Cancel")
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        openVault("")
+        vaults.remove(id)
+    }
+
+    private func ask(_ title: String, detail: String?, value: String) -> String? {
+        let a = NSAlert()
+        a.messageText = title
+        if let detail { a.informativeText = detail }
+        let f = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        f.stringValue = value
+        f.placeholderString = "Name"
+        a.accessoryView = f
+        a.addButton(withTitle: "OK"); a.addButton(withTitle: "Cancel")
+        a.window.initialFirstResponder = f
+        guard a.runModal() == .alertFirstButtonReturn else { return nil }
+        let v = f.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return v.isEmpty ? nil : v
     }
 
     /// Starts a new top-level section: "# " in the input, ↩ adds it.

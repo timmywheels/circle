@@ -112,6 +112,10 @@ struct Palette: View {
         })
         items.append(PaletteItem(id: "rescan", title: "rescan agents") { reg.scan(); app.say("scanning PATH") })
         items.append(PaletteItem(id: "sync", title: "reconnect sync", detail: store.syncState.label) { app.sync.reload() })
+        for v in app.vaults.vaults where v.id != store.vault {
+            items.append(PaletteItem(id: "vault-" + v.id, title: "vault: " + v.name) { app.openVault(v.id) })
+        }
+        items.append(PaletteItem(id: "vault-new", title: "new vault") { app.newVault() })
         items.append(PaletteItem(id: "account", title: "sync & account", detail: app.account.isReady ? "signed in" : "sign in") { app.accountOpen = true })
         items.append(PaletteItem(id: "section", title: "new section", detail: "⇧⌘N") { app.newSection() })
         items.append(PaletteItem(id: "settings", title: "open settings", detail: "settings.json  ⌘,") { Settings.shared.open() })

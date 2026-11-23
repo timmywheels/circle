@@ -20,6 +20,7 @@ if CommandLine.arguments.count >= 4, CommandLine.arguments[1] == "--vault-intero
     print("JS_ROW_OPENED kind=\(t.kind.rawValue) title=\(t.title) notes=\(t.notes.debugDescription) sort=\(t.sort) remindAt=\(t.remindAt) origin=\(t.origin)")
     print("JS_KEYCHECK \(v.verify(keyCheck: pack.keycheck))")
     print("RECOVERY \(v.recoveryKey)")
+    print("VAULT_WORK_KEY " + v.forVault("work").key.withUnsafeBytes { Data($0) }.map { String(format: "%02x", $0) }.joined())
     let mine = Todo(kind: .agent, parent: "p1", title: "from the mac ✓", notes: "n", sort: 2.5, origin: "mac1", remindAt: 1_800_000_000_000, repeatRule: "weekdays")
     let out = Pack(row: try! v.seal(mine), keycheck: try! v.keyCheck())
     try! JSONEncoder().encode(out).write(to: URL(fileURLWithPath: CommandLine.arguments[3]))
@@ -130,7 +131,8 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--when" {
 }
 
 let repo: TodoRepo = {
-    do { return try TodoRepo() } catch {
+    // Agents work in the vault that's open in the app.
+    do { return try TodoRepo(vault: Paths.currentVault) } catch {
         FileHandle.standardError.write("circle-mcp: cannot open database: \(error)\n".data(using: .utf8)!)
         exit(1)
     }

@@ -28,3 +28,6 @@ if (swift && existsSync(swift)) {
   console.log("SWIFT_ROW_OPENED", JSON.stringify(opened));
   console.log("SWIFT_KEYCHECK", v.verify(s.keycheck));
 }
+// Vault keys: must equal the Mac's Vault.forVault("work") (circle-mcp --vault-interop prints it).
+console.log("VAULT_WORK_KEY " + Buffer.from(v.forVault("work").key).toString("hex"));
+if (v.forVault("") !== v) throw new Error("Personal must use the account key");

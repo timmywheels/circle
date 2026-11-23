@@ -2,6 +2,8 @@
 // A sealed blob is base64(nonce[12] | ciphertext | tag[16]); the todo id is the AAD, so a
 // blob can't be moved to another row. The server only ever sees ids, times and blobs.
 import { chacha20poly1305 } from "@noble/ciphers/chacha.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { Kind, Todo } from "./model";
 
 export type SealedRow = { id: string; updated_at: number; origin: string; deleted: boolean; blob: string };
@@ -22,6 +24,12 @@ export class Vault {
   }
 
   static generate(random: RandomBytes) { return new Vault(random(32), random); }
+
+  /** A vault's key, derived from the account key like the Mac does. "" (Personal) is the account key. */
+  forVault(id: string): Vault {
+    if (!id) return this;
+    return new Vault(hkdf(sha256, this.key, enc.encode("circle"), enc.encode("circle-vault:" + id), 32), this.random);
+  }
 
   private sealBytes(plain: Uint8Array, aad: Uint8Array): string {
     const nonce = this.random(12);

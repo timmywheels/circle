@@ -11,7 +11,13 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
     private let center = UNUserNotificationCenter.current()
     private weak var app: AppModel?
     /// What is currently scheduled: id -> (remindAt, title) it was scheduled for.
-    private var scheduled: [String: String] = [:]
+    /// Kept per vault: syncing one vault never cancels another vault's reminders.
+    private var byVault: [String: [String: String]] = [:]
+    private var vault: String { app?.store.vault ?? "" }
+    private var scheduled: [String: String] {
+        get { byVault[vault] ?? [:] }
+        set { byVault[vault] = newValue }
+    }
     private var authorized = false
     private var asked = false
 
@@ -72,7 +78,7 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
             c.sound = .default
             c.categoryIdentifier = Self.category
             c.threadIdentifier = t.id
-            c.userInfo = ["id": t.id]
+            c.userInfo = ["id": t.id, "vault": vault]
             let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(1, fire.timeIntervalSince(now)), repeats: false)
             center.add(UNNotificationRequest(identifier: "r-\(t.id)-\(n)", content: c, trigger: trigger))
         }
@@ -106,9 +112,12 @@ final class Reminders: NSObject, UNUserNotificationCenterDelegate {
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                             withCompletionHandler done: @escaping () -> Void) {
         let id = response.notification.request.content.userInfo["id"] as? String
+        let vault = response.notification.request.content.userInfo["vault"] as? String ?? ""
         let action = response.actionIdentifier
         DispatchQueue.main.async {
             defer { done() }
+            // A reminder from another vault: open that vault first.
+            if let app = self.app, vault != app.store.vault { app.openVault(vault) }
             guard let id, let app = self.app, let t = app.store.todo(id) else { return }
             let now = Date()
             switch action {

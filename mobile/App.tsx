@@ -11,12 +11,13 @@ import * as Haptics from "expo-haptics";
 import * as Updates from "expo-updates";
 import { AccountState, restore, setUpKey, signIn, signOut, unlock } from "./src/account";
 import { store, Line } from "./src/store";
+import { vaults } from "./src/vaults";
 import { Sync, SyncState } from "./src/sync";
 import { Kind, Todo, displayTitle, glyph, isBlank, isSection } from "./src/model";
 import { formatWhen, quickTimes, syncReminders } from "./src/reminders";
 
 // Shown on the unlock screen so you can tell an over-the-air update arrived.
-const BUILD_LABEL = "v0.1.0 · update 2" + (Updates.updateId ? " · " + Updates.updateId.slice(0, 8) : "");
+const BUILD_LABEL = "v0.1.0 · update 4" + (Updates.updateId ? " · " + Updates.updateId.slice(0, 8) : "");
 
 // MARK: theme
 
@@ -174,23 +175,64 @@ function ListScreen({ p, acct, onSignOut }: { p: Palette; acct: Ready; onSignOut
   const [target, setTarget] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const syncRef = useRef<Sync | null>(null);
+  const indexRef = useRef<Sync | null>(null);
   const input = useRef<{ focus: () => void } | null>(null);
+  const [vaultID, setVaultID] = useState<string | null>(null);
+  useSyncExternalStore((f) => vaults.subscribe(f), () => vaults.version);
 
+  // Boot: the vault list (and its sync), then whichever vault was open last.
   useEffect(() => {
     let alive = true;
-    store.load(acct.user).then(() => {
+    (async () => {
+      await store.load(acct.user, "");
+      await vaults.load(acct.user, store.origin);
+      if (!alive) return;
+      const ix = new Sync(acct.session, acct.vault, vaults);
+      indexRef.current = ix;
+      ix.start();
+      setVaultID(vaults.current);
+    })();
+    const sub = AppState.addEventListener("change", (st) => {
+      if (st === "active") { syncRef.current?.wake(); indexRef.current?.wake(); }
+    });
+    return () => { alive = false; sub.remove(); indexRef.current?.stop(); };
+  }, [acct.user, acct.session, acct.vault]);
+
+  // Each vault: its own local list and its own sync connection (and key).
+  useEffect(() => {
+    if (vaultID === null) return;
+    let alive = true;
+    setLoaded(false);
+    (async () => {
+      await store.load(acct.user, vaultID);
       if (!alive) return;
       setLoaded(true);
-      const sy = new Sync(acct.session, acct.vault);
+      const sy = new Sync(acct.session, acct.vault, store);
       sy.onState = setSync;
       syncRef.current = sy;
       sy.start();
-    });
-    const sub = AppState.addEventListener("change", (st) => { if (st === "active") syncRef.current?.wake(); });
-    return () => { alive = false; sub.remove(); syncRef.current?.stop(); };
-  }, [acct.user, acct.session, acct.vault]);
+    })();
+    return () => { alive = false; syncRef.current?.stop(); syncRef.current = null; };
+  }, [vaultID, acct.user, acct.session, acct.vault]);
 
-  useEffect(() => { if (loaded) syncReminders(Object.values(store.rows)); }, [store.version, loaded]);
+  // The open vault was removed on another device: fall back to Personal.
+  useEffect(() => { if (vaultID !== null && vaults.current !== vaultID) setVaultID(vaults.current); }, [vaults.version]);
+
+  useEffect(() => { if (loaded && vaultID !== null) syncReminders(Object.values(store.rows), vaultID); }, [store.version, loaded]);
+
+  const openVault = (id: string) => { setTarget(null); vaults.open(id); setVaultID(id); };
+
+  const pickVault = () => {
+    const list = vaults.list;
+    const items = [...list.map((v) => (v.id === vaultID ? "✓ " : "") + v.name), "New vault…", "Cancel"];
+    ActionSheetIOS.showActionSheetWithOptions({ options: items, cancelButtonIndex: items.length - 1, title: "Vaults" }, (i) => {
+      if (i < list.length) openVault(list[i].id);
+      else if (i === list.length) Alert.prompt("New vault", "A separate list with its own encryption key.", (name) => {
+        const id = vaults.create(name ?? "");
+        if (id) openVault(id);
+      });
+    });
+  };
 
   const lines = loaded ? store.lines(hideDone) : [];
   const sections = loaded ? store.sections() : [];
@@ -220,7 +262,10 @@ function ListScreen({ p, acct, onSignOut }: { p: Palette; acct: Ready; onSignOut
     <SafeAreaView style={{ flex: 1 }} edges={["top", "bottom"]}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
         <View style={[s.header, { borderBottomColor: p.line }]}>
-          <Text style={[s.headerTitle, { color: p.text }]}>Circle</Text>
+          <Pressable onPress={pickVault} hitSlop={10} style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Text style={[s.headerTitle, { color: p.text }]}>{vaultID === null ? "Circle" : vaults.name(vaultID)}</Text>
+            <Text style={{ color: p.faint, fontSize: 11 }}>▾</Text>
+          </Pressable>
           <Pressable onPress={menu} hitSlop={12} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Text style={{ color: p.dim, fontSize: 13 }}>○ {loaded ? store.openCount() : ""}</Text>
             <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: dot }} />
@@ -246,7 +291,7 @@ function ListScreen({ p, acct, onSignOut }: { p: Palette; acct: Ready; onSignOut
 
         <View style={[s.composer, { borderTopColor: p.line }]}>
           {sections.length > 0 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always"
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} keyboardShouldPersistTaps="always"
                         contentContainerStyle={{ gap: 6, paddingHorizontal: 14, paddingBottom: 8 }}>
               <Chip p={p} label="Top" on={!targetTodo} onPress={() => setTarget(null)} />
               {sections.map((sec) => (
@@ -353,7 +398,7 @@ function Editor({ p, id, onClose }: { p: Palette; id: string | null; onClose: ()
               <Text style={[s.label, { color: p.dim }]}>
                 {t.remindAt > 0 ? "Remind " + formatWhen(t.remindAt) + (t.repeatRule ? " · ↻ " + t.repeatRule : "") : "Remind"}
               </Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingVertical: 6 }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ gap: 6, paddingVertical: 6 }}>
                 {quickTimes().map((q) => (
                   <Chip key={q.label} p={p} on={false} label={q.label} onPress={() => store.update(t.id, { remindAt: q.at })} />
                 ))}
@@ -400,7 +445,7 @@ const s = StyleSheet.create({
   section: { fontSize: 13, fontFamily: MONO, fontWeight: "700", letterSpacing: 0.6, flex: 1 },
   composer: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 10, paddingBottom: 6 },
   input: { marginHorizontal: 14, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 16, fontFamily: MONO },
-  chip: { borderRadius: 14, paddingHorizontal: 12, paddingVertical: 6 },
+  chip: { borderRadius: 14, paddingHorizontal: 12, paddingVertical: 6, alignSelf: "flex-start" },
   editTitle: { fontSize: 22, fontFamily: MONO, fontWeight: "600" },
   label: { fontSize: 13, marginTop: 6 },
   notes: { flex: 1, fontSize: 16, fontFamily: MONO, lineHeight: 23, marginTop: 14, textAlignVertical: "top" },

@@ -8,7 +8,17 @@ type Saved = { rows: Record<string, Todo>; dirty: string[]; cursor: number };
 
 export type Line = { todo: Todo; depth: number; hasKids: boolean };
 
-class Store {
+/** What a sync connection feeds: one vault's list, or the list of vaults. */
+export interface SyncTarget {
+  vaultID: string;
+  cursor: number;
+  onLocalChange: (() => void) | null;
+  pending(limit?: number): Todo[];
+  applyRemote(todos: Todo[], cursor: number | null): void;
+}
+
+class Store implements SyncTarget {
+  vaultID = "";
   rows: Record<string, Todo> = {};
   dirty = new Set<string>();
   cursor = 0;
@@ -19,10 +29,16 @@ class Store {
   version = 0;
   onLocalChange: (() => void) | null = null;
 
-  async load(user: string) {
+  private get storageKey() { return "list:" + this.user + (this.vaultID ? ":" + this.vaultID : ""); }
+
+  async load(user: string, vault = "") {
+    // Write out the vault we're leaving before switching keys.
+    if (this.saveTimer) { clearTimeout(this.saveTimer); this.saveTimer = null; this.save(); }
+    this.vaultID = vault;
     this.origin = (await Storage.getItem("origin")) ?? "ios-" + newID(randomBytes).slice(-8);
     await Storage.setItem("origin", this.origin);
-    const raw = await Storage.getItem("list:" + user);
+    this.user = user;
+    const raw = await Storage.getItem(this.storageKey);
     const s: Saved = raw ? JSON.parse(raw) : { rows: {}, dirty: [], cursor: 0 };
     this.rows = s.rows; this.dirty = new Set(s.dirty); this.cursor = s.cursor;
     this.collapsed = new Set(JSON.parse((await Storage.getItem("collapsed")) ?? "[]"));
@@ -44,12 +60,12 @@ class Store {
   private save() {
     if (!this.user) return;
     const s: Saved = { rows: this.rows, dirty: [...this.dirty], cursor: this.cursor };
-    Storage.setItem("list:" + this.user, JSON.stringify(s));
+    Storage.setItem(this.storageKey, JSON.stringify(s));
     Storage.setItem("collapsed", JSON.stringify([...this.collapsed]));
   }
 
   async clear() {
-    if (this.user) await Storage.removeItem("list:" + this.user);
+    if (this.user) await Storage.removeItem(this.storageKey);
     this.rows = {}; this.dirty.clear(); this.cursor = 0; this.user = "";
     this.changed(false);
   }

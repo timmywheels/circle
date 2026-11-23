@@ -9,23 +9,29 @@ Notifications.setNotificationHandler({
 });
 
 let asked = false;
-let lastSig = "";
+const lastSig: Record<string, string> = {};
 
-export async function syncReminders(todos: Todo[]) {
+/** Schedules one vault's reminders; other vaults' stay scheduled. */
+export async function syncReminders(todos: Todo[], vault: string) {
   const due = todos.filter((t) => !t.deleted && !t.done && !isSection(t) && t.remindAt > Date.now());
   const sig = due.map((t) => t.id + ":" + t.remindAt + ":" + t.title).sort().join("|");
-  if (sig === lastSig) return;
-  lastSig = sig;
+  if (sig === lastSig[vault]) return;
+  lastSig[vault] = sig;
   if (due.length && !asked) {
     asked = true;
     await Notifications.requestPermissionsAsync({ ios: { allowAlert: true, allowSound: true, allowBadge: false } });
   }
-  await Notifications.cancelAllScheduledNotificationsAsync();
+  const prefix = "r-" + (vault || "personal") + "-";
+  for (const n of await Notifications.getAllScheduledNotificationsAsync()) {
+    if (n.identifier.startsWith(prefix) || (!vault && /^r-[0-9a-f]{19}$/.test(n.identifier))) {
+      await Notifications.cancelScheduledNotificationAsync(n.identifier);
+    }
+  }
   // iOS keeps at most 64 pending; the soonest matter most.
-  for (const t of due.sort((a, b) => a.remindAt - b.remindAt).slice(0, 60)) {
+  for (const t of due.sort((a, b) => a.remindAt - b.remindAt).slice(0, 30)) {
     await Notifications.scheduleNotificationAsync({
-      identifier: "r-" + t.id,
-      content: { title: displayTitle(t).replace(/\[\[|\]\]/g, ""), sound: true, data: { id: t.id } },
+      identifier: prefix + t.id,
+      content: { title: displayTitle(t).replace(/\[\[|\]\]/g, ""), sound: true, data: { id: t.id, vault } },
       trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: new Date(t.remindAt) },
     });
   }
