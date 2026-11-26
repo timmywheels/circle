@@ -31,3 +31,11 @@ if (swift && existsSync(swift)) {
 // Vault keys: must equal the Mac's Vault.forVault("work") (circle-mcp --vault-interop prints it).
 console.log("VAULT_WORK_KEY " + Buffer.from(v.forVault("work").key).toString("hex"));
 if (v.forVault("") !== v) throw new Error("Personal must use the account key");
+
+// Vault codes: same format as the Mac ("CV1-<id>-<recovery key>"), forgiving of case and spacing.
+import { VaultCode } from "../src/vault";
+const code = VaultCode.make("vabc123xyz", v);
+const parsed = VaultCode.parse("  " + code.toLowerCase() + "\n", rnd)!;
+if (parsed.id !== "vabc123xyz" || parsed.vault.recoveryKey !== v.recoveryKey) throw new Error("vault code roundtrip");
+if (VaultCode.parse("CV1-_index-" + v.recoveryKey, rnd) || VaultCode.parse("XYZ", rnd)) throw new Error("bad codes accepted");
+console.log("vault code ok");

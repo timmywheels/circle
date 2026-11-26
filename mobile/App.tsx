@@ -9,7 +9,7 @@ import * as AppleAuthentication from "expo-apple-authentication";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import * as Updates from "expo-updates";
-import { AccountState, restore, setUpKey, signIn, signOut, unlock } from "./src/account";
+import { AccountState, restore, setUpKey, signIn, signOut, unlock, useVaultsOnly } from "./src/account";
 import { store, Line } from "./src/store";
 import { vaults } from "./src/vaults";
 import { Sync, SyncState } from "./src/sync";
@@ -17,7 +17,7 @@ import { Kind, Todo, displayTitle, glyph, isBlank, isSection } from "./src/model
 import { formatWhen, quickTimes, syncReminders } from "./src/reminders";
 
 // Shown on the unlock screen so you can tell an over-the-air update arrived.
-const BUILD_LABEL = "v0.1.0 · update 4" + (Updates.updateId ? " · " + Updates.updateId.slice(0, 8) : "");
+const BUILD_LABEL = "v0.1.0 · update 5" + (Updates.updateId ? " · " + Updates.updateId.slice(0, 8) : "");
 
 // MARK: theme
 
@@ -77,7 +77,7 @@ export default function App() {
         {acct.kind === "signedOut" && <SignIn p={p} error={error} onSignIn={() => run(signIn)} />}
         {acct.kind === "needsKey" && (
           <Unlock p={p} error={error} busy={busy} onUnlock={(k) => run(() => unlock(acct, k))}
-                  onRetry={() => run(() => setUpKey(acct))} onSignOut={leave} />
+                  onRetry={() => run(() => setUpKey(acct))} onSkip={() => run(() => useVaultsOnly(acct))} onSignOut={leave} />
         )}
         {acct.kind === "newKey" && (
           <NewKey p={p} recovery={acct.vault.recoveryKey} onDone={() => setAcct({ ...acct, kind: "ready" })} />
@@ -116,8 +116,8 @@ function SignIn({ p, error, onSignIn }: { p: Palette; error: string | null; onSi
   );
 }
 
-function Unlock({ p, error, busy, onUnlock, onRetry, onSignOut }:
-  { p: Palette; error: string | null; busy: boolean; onUnlock: (k: string) => void; onRetry: () => void; onSignOut: () => void }) {
+function Unlock({ p, error, busy, onUnlock, onRetry, onSkip, onSignOut }:
+  { p: Palette; error: string | null; busy: boolean; onUnlock: (k: string) => void; onRetry: () => void; onSkip: () => void; onSignOut: () => void }) {
   const [key, setKey] = useState("");
   return (
     <Center>
@@ -137,6 +137,7 @@ function Unlock({ p, error, busy, onUnlock, onRetry, onSignOut }:
       </Pressable>
       <View style={{ flexDirection: "row", gap: 24, marginTop: 18 }}>
         <Pressable onPress={onRetry}><Text style={{ color: p.dim }}>Check again</Text></Pressable>
+        <Pressable onPress={onSkip}><Text style={{ color: p.dim }}>Skip: vaults only</Text></Pressable>
         <Pressable onPress={onSignOut}><Text style={{ color: p.dim }}>Sign out</Text></Pressable>
       </View>
       <Text style={{ color: p.faint, fontSize: 11, marginTop: 28 }}>{BUILD_LABEL}</Text>
@@ -175,27 +176,24 @@ function ListScreen({ p, acct, onSignOut }: { p: Palette; acct: Ready; onSignOut
   const [target, setTarget] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const syncRef = useRef<Sync | null>(null);
-  const indexRef = useRef<Sync | null>(null);
+  const [booted, setBooted] = useState(false);
   const input = useRef<{ focus: () => void } | null>(null);
   const [vaultID, setVaultID] = useState<string | null>(null);
   useSyncExternalStore((f) => vaults.subscribe(f), () => vaults.version);
 
-  // Boot: the vault list (and its sync), then whichever vault was open last.
+  // Boot: the account's vault directory and the keys on this phone, then the vault open last.
   useEffect(() => {
     let alive = true;
     (async () => {
-      await store.load(acct.user, "");
-      await vaults.load(acct.user, store.origin);
+      await vaults.load(acct.user, acct.session, acct.vault);
       if (!alive) return;
-      const ix = new Sync(acct.session, acct.vault, vaults);
-      indexRef.current = ix;
-      ix.start();
-      setVaultID(vaults.current);
+      setVaultID(vaults.isUnlocked(vaults.current) ? vaults.current : null);
+      setBooted(true);
     })();
     const sub = AppState.addEventListener("change", (st) => {
-      if (st === "active") { syncRef.current?.wake(); indexRef.current?.wake(); }
+      if (st === "active") { syncRef.current?.wake(); vaults.refresh(); }
     });
-    return () => { alive = false; sub.remove(); indexRef.current?.stop(); };
+    return () => { alive = false; sub.remove(); };
   }, [acct.user, acct.session, acct.vault]);
 
   // Each vault: its own local list and its own sync connection (and key).
@@ -205,9 +203,10 @@ function ListScreen({ p, acct, onSignOut }: { p: Palette; acct: Ready; onSignOut
     setLoaded(false);
     (async () => {
       await store.load(acct.user, vaultID);
-      if (!alive) return;
+      const key = vaults.key(vaultID);
+      if (!alive || !key) return;
       setLoaded(true);
-      const sy = new Sync(acct.session, acct.vault, store);
+      const sy = new Sync(acct.session, key, store);
       sy.onState = setSync;
       syncRef.current = sy;
       sy.start();
@@ -215,22 +214,56 @@ function ListScreen({ p, acct, onSignOut }: { p: Palette; acct: Ready; onSignOut
     return () => { alive = false; syncRef.current?.stop(); syncRef.current = null; };
   }, [vaultID, acct.user, acct.session, acct.vault]);
 
-  // The open vault was removed on another device: fall back to Personal.
-  useEffect(() => { if (vaultID !== null && vaults.current !== vaultID) setVaultID(vaults.current); }, [vaults.version]);
+  // The open vault was locked or removed: fall back to another one this phone can open.
+  useEffect(() => {
+    if (vaultID !== null && vaults.current !== vaultID) setVaultID(vaults.isUnlocked(vaults.current) ? vaults.current : null);
+  }, [vaults.version]);
 
   useEffect(() => { if (loaded && vaultID !== null) syncReminders(Object.values(store.rows), vaultID); }, [store.version, loaded]);
 
   const openVault = (id: string) => { setTarget(null); vaults.open(id); setVaultID(id); };
 
+  const fail = (e: unknown) => Alert.alert("Vault", String((e as Error)?.message ?? e));
+
+  const showCode = (title: string, code: string, detail: string) =>
+    Alert.alert(title, detail + "\n\n" + code, [
+      { text: "Copy code", onPress: () => Clipboard.setStringAsync(code) }, { text: "Done", style: "cancel" }]);
+
+  const unlockWithCode = (expecting?: string) =>
+    Alert.prompt("Unlock with code", "Paste the vault code (CV1-…). On the Mac: Vault, Show Vault Code.", async (code) => {
+      if (!code?.trim()) return;
+      try { openVault(await vaults.unlock(code, expecting)); } catch (e) { fail(e); }
+    });
+
+  const newVault = () => Alert.prompt("New vault", "A separate list with its own encryption key.", async (name) => {
+    if (!name?.trim()) return;
+    try {
+      const { id, code } = await vaults.create(name);
+      openVault(id);
+      showCode("Vault created", code, "Save this code. It's the only way to open this vault on another device.");
+    } catch (e) { fail(e); }
+  });
+
   const pickVault = () => {
     const list = vaults.list;
-    const items = [...list.map((v) => (v.id === vaultID ? "✓ " : "") + v.name), "New vault…", "Cancel"];
+    const cur = vaultID ?? "";
+    const extra = ["New vault…", "Unlock with code…", ...(cur ? ["Show vault code", "Lock on this phone"] : []), "Cancel"];
+    const items = [...list.map((v) => (v.id === vaultID ? "✓ " : "") + v.name + (v.unlocked ? "" : " 🔒")), ...extra];
     ActionSheetIOS.showActionSheetWithOptions({ options: items, cancelButtonIndex: items.length - 1, title: "Vaults" }, (i) => {
-      if (i < list.length) openVault(list[i].id);
-      else if (i === list.length) Alert.prompt("New vault", "A separate list with its own encryption key.", (name) => {
-        const id = vaults.create(name ?? "");
-        if (id) openVault(id);
-      });
+      if (i < list.length) {
+        const v = list[i];
+        if (v.unlocked) openVault(v.id);
+        else if (v.id) unlockWithCode(v.id);
+        else Alert.alert("Personal is locked here", "Sign out and back in with your recovery key to open Personal on this phone.");
+        return;
+      }
+      const action = items[i];
+      if (action === "New vault…") newVault();
+      else if (action === "Unlock with code…") unlockWithCode();
+      else if (action === "Show vault code") { const c = vaults.code(cur); if (c) showCode(vaults.name(cur), c, "Paste it on another device to open this vault."); }
+      else if (action === "Lock on this phone") Alert.alert("Lock " + vaults.name(cur) + " on this phone?",
+        "Its key and local copy leave this phone. Other devices keep it; you'll need the code to open it here again.",
+        [{ text: "Cancel", style: "cancel" }, { text: "Lock", style: "destructive", onPress: () => vaults.lock(cur) }]);
     });
   };
 
@@ -239,6 +272,7 @@ function ListScreen({ p, acct, onSignOut }: { p: Palette; acct: Ready; onSignOut
   const targetTodo = target ? store.rows[target] : null;
 
   const add = () => {
+    if (!loaded) return;
     const t = store.add(draft, targetTodo && !targetTodo.deleted ? target : null);
     if (t) { setDraft(""); Haptics.selectionAsync(); }
   };
@@ -286,6 +320,16 @@ function ListScreen({ p, acct, onSignOut }: { p: Palette; acct: Ready; onSignOut
             <Text style={{ color: p.dim, textAlign: "center", marginTop: 80 }}>
               {sync === "synced" ? "Nothing here yet." : "Syncing…"}
             </Text>
+          ) : booted && vaultID === null ? (
+            <View style={{ alignItems: "center", marginTop: 80, paddingHorizontal: 32, gap: 14 }}>
+              <Text style={{ color: p.body, textAlign: "center" }}>
+                No vault is open on this phone. Paste a vault code to open one, or make a new vault.
+              </Text>
+              <Pressable onPress={() => unlockWithCode()} style={[s.primary, { backgroundColor: p.text }]}>
+                <Text style={[s.primaryText, { color: p.bg }]}>Unlock with code</Text>
+              </Pressable>
+              <Pressable onPress={newVault}><Text style={{ color: p.dim }}>New vault</Text></Pressable>
+            </View>
           ) : undefined}
         />
 

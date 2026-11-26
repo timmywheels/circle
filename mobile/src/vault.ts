@@ -105,6 +105,22 @@ export class Vault {
 
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
+/** A vault code: "CV1-<id>-<key in recovery-key form>". Same format as the Mac. */
+export const VaultCode = {
+  make: (id: string, v: Vault) => "CV1-" + id + "-" + v.recoveryKey,
+  parse(s: string, random: RandomBytes): { id: string; vault: Vault } | null {
+    let t = s.trim();
+    if (!t.toUpperCase().startsWith("CV1-")) return null;
+    t = t.slice(4);
+    const dash = t.indexOf("-");
+    if (dash < 1) return null;
+    const id = t.slice(0, dash).toLowerCase();
+    if (!/^[a-z0-9_]{1,40}$/.test(id) || id === "_index") return null;
+    const vault = Vault.fromRecoveryKey(t.slice(dash + 1), random);
+    return vault ? { id, vault } : null;
+  },
+};
+
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 export function toBase64(b: Uint8Array): string {
   let s = "";

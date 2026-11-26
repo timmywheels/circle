@@ -13,7 +13,8 @@ export type AccountState =
   | { kind: "signedOut" }
   | { kind: "needsKey"; user: string; email: string | null; session: string }
   | { kind: "newKey"; user: string; email: string | null; session: string; vault: Vault }
-  | { kind: "ready"; user: string; email: string | null; session: string; vault: Vault };
+  // vault is null on a device that skipped Personal ("vaults only"): it opens only vaults whose codes it has.
+  | { kind: "ready"; user: string; email: string | null; session: string; vault: Vault | null };
 
 // SecureStore keys allow only letters, digits, ".", "-" and "_".
 const vaultKey = (user: string) => "vault_" + user.replace(/[^A-Za-z0-9._-]/g, "_");
@@ -25,7 +26,10 @@ export async function restore(): Promise<AccountState> {
   if (!raw) return { kind: "signedOut" };
   const a = JSON.parse(raw) as { user: string; email: string | null; session: string };
   const key = await SecureStore.getItemAsync(vaultKey(a.user), opts);
-  if (!key) return { kind: "needsKey", ...a };
+  if (!key) {
+    const only = await SecureStore.getItemAsync(onlyKey(a.user), opts);
+    return only ? { kind: "ready", ...a, vault: null } : { kind: "needsKey", ...a };
+  }
   return { kind: "ready", ...a, vault: new Vault(fromBase64(key), randomBytes) };
 }
 
@@ -71,7 +75,27 @@ export async function unlock(a: { user: string; email: string | null; session: s
   const check = await getKeyCheck(a.session);
   if (check && !v.verify(check)) throw new Error("That key doesn't unlock this account.");
   await SecureStore.setItemAsync(vaultKey(a.user), toBase64(v.key), opts);
+  await SecureStore.deleteItemAsync(onlyKey(a.user), opts);
   return { kind: "ready", ...a, vault: v };
+}
+
+export const onlyKey = (user: string) => "vaultsonly_" + user.replace(/[^A-Za-z0-9._-]/g, "_");
+
+/** Skip Personal on this phone; open vaults with their codes instead. */
+export async function useVaultsOnly(a: { user: string; email: string | null; session: string }): Promise<AccountState> {
+  await SecureStore.setItemAsync(onlyKey(a.user), "1", opts);
+  return { kind: "ready", ...a, vault: null };
+}
+
+/** Authenticated call to the sync server. */
+export async function api(session: string, path: string, init: { method?: string; body?: unknown } = {}) {
+  const r = await fetch(SERVER + path, {
+    method: init.method ?? "GET",
+    headers: { Authorization: "Bearer " + session, "Content-Type": "application/json" },
+    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+  });
+  if (r.status === 401) throw new Error("Session expired, sign in again.");
+  return r;
 }
 
 export async function signOut(user?: string) {

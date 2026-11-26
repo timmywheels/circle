@@ -18,12 +18,8 @@ export class Sync {
   private stopped = true;
   unreadable = 0;
 
-  private vault: Vault;
-
-  /** One connection per target: the open vault's list, or the vault list. Each has its own key. */
-  constructor(private session: string, account: Vault, private target: SyncTarget) {
-    this.vault = account.forVault(target.vaultID);
-  }
+  /** One connection per vault, sealed with that vault's own key. */
+  constructor(private session: string, private vault: Vault, private target: SyncTarget) {}
 
   start() {
     this.stopped = false;
